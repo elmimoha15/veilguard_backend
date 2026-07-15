@@ -1,0 +1,12 @@
+rules_version = '2';
+
+// Locked down by default. In Slice 2 there is no user auth yet, and all writes
+// happen via the Admin SDK (which bypasses these rules) from the API + worker.
+// Direct client access is denied until auth + ownership land in Slice 4.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

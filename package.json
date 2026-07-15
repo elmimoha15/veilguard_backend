@@ -1,0 +1,32 @@
+{
+  "name": "veilguard-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Veilguard scan service — API + queue + Cloud Run worker + Firestore. Wraps the veilguard-scanner engine.",
+  "type": "module",
+  "engines": { "node": ">=18.0.0" },
+  "scripts": {
+    "emulators": "PATH=\"$PWD/.jre/bin:$PATH\" firebase emulators:start --only firestore --project demo-veilguard",
+    "worker": "tsx worker/src/index.ts",
+    "trigger": "PATH=\"$PWD/.jre/bin:$PATH\" firebase emulators:exec --only firestore --project demo-veilguard \"tsx scripts/trigger-scan.ts\"",
+    "test": "PATH=\"$PWD/.jre/bin:$PATH\" firebase emulators:exec --only firestore --project demo-veilguard \"vitest run\"",
+    "gate": "PATH=\"$PWD/.jre/bin:$PATH\" firebase emulators:exec --only firestore --project demo-veilguard \"tsx test/gate.ts\"",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json"
+  },
+  "dependencies": {
+    "@google-cloud/tasks": "^5.5.0",
+    "express": "^4.21.0",
+    "firebase-admin": "^12.7.0",
+    "veilguard-scanner": "file:../veilguard-scanner",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.0",
+    "execa": "^9.3.0",
+    "tsx": "^4.17.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}
