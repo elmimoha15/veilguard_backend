@@ -22,8 +22,30 @@
     </style>
   </head>
   <body>
-    <div class="banner">⚠ Dev harness — <strong>not the product UI</strong>. Proves the free-scan flow end to end.</div>
+    <div class="banner">⚠ Dev harness — <strong>not the product UI</strong>. Proves the free-scan + auth flow end to end.</div>
     <h1>Veilguard free scan</h1>
+
+    <fieldset id="authbox" style="margin:12px 0;padding:10px;border:1px solid #ccc;border-radius:6px;">
+      <legend>Account</legend>
+      <div id="signedout">
+        <div class="row">
+          <input id="email" type="email" placeholder="you@example.com" />
+          <input id="password" type="password" placeholder="password" />
+        </div>
+        <div class="row">
+          <button id="signup">Sign up</button>
+          <button id="login">Log in</button>
+          <button id="google">Google</button>
+          <button id="github">GitHub</button>
+        </div>
+      </div>
+      <div id="signedin" style="display:none;">
+        Signed in as <strong id="who"></strong> (<span id="plan"></span>)
+        <button id="logout">Log out</button>
+        <div id="myscans" style="margin-top:8px;"></div>
+      </div>
+    </fieldset>
+
     <div class="row">
       <input id="url" type="text" placeholder="https://example.com" value="" />
       <button id="scan">Run free scan</button>
@@ -32,6 +54,7 @@
     <div id="grade"></div>
     <div class="counts" id="counts"></div>
     <div id="findings"></div>
+    <div id="claimbox" style="margin-top:8px;"></div>
 
     <script type="module" src="/app.js"></script>
   </body>

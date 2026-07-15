@@ -14,6 +14,8 @@ export interface CreateScanOptions {
   clientIp?: string;
   /** Permit localhost/private-IP targets (local dev / tests). Default from config. */
   allowPrivateTargets?: boolean;
+  /** Owner uid when the caller is authenticated; null/undefined = anonymous. */
+  ownerUid?: string | null;
 }
 
 /**
@@ -49,7 +51,7 @@ export async function handleCreateScan(
     return { status: 429, body: { error: 'rate limited', retryAfterMs: rl.retryAfterMs } };
   }
 
-  const scanId = await createScanDoc(target);
+  const scanId = await createScanDoc(target, opts.ownerUid ?? null);
   await queue.enqueue({ scanId });
 
   return { status: 202, body: { scanId } };

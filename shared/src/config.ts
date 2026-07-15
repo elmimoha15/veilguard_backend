@@ -12,6 +12,7 @@ export const config = {
 
   /** Present (and set by `firebase emulators:exec`) when running on the emulator. */
   firestoreEmulatorHost: process.env.FIRESTORE_EMULATOR_HOST,
+  authEmulatorHost: process.env.FIREBASE_AUTH_EMULATOR_HOST,
   get usingEmulator(): boolean {
     return !!process.env.FIRESTORE_EMULATOR_HOST;
   },

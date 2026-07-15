@@ -1,6 +1,21 @@
 # veilguard-backend
 
-**Slices 2–3** of the Veilguard backend: the asynchronous **scan service** (Slice 2) plus the browser-facing **free-scan path** (Slice 3). A scan is triggered by an API call, run in the background by a worker, and streamed into Firestore live; a throwaway dev UI lets you paste a URL and watch findings appear. No user auth or billing yet.
+**Slices 2–4** of the Veilguard backend: the asynchronous **scan service** (Slice 2), the browser-facing **free-scan path** (Slice 3), and **auth & accounts** (Slice 4). A scan is triggered by an API call, run in the background by a worker, and streamed into Firestore live; a throwaway dev UI lets you sign up, paste a URL, and watch findings appear against your account. No billing yet.
+
+## Auth & accounts (Slice 4)
+
+- **Sign-in** via the Firebase **Auth emulator**: email/password, Google, and GitHub (GitHub is wired for Slice 5's repo access but requests **basic profile only** — no repo scopes yet).
+- On the first authenticated backend call (`POST /me`, or an authenticated `createScan`), the server idempotently creates `users/{uid}` = `{ uid, email, displayName, createdAt, plan: 'free', provider, connections: {}, alertEmail }`. `plan` is server-controlled — a `getPlan(uid)` helper is ready for Slice 6 to flip fixes on. Nothing is gated on it yet.
+- **Owned scans**: an authenticated `createScan` stamps `ownerUid = uid`; anonymous (no token) scans keep `ownerUid = null` (the free public path, unchanged). Signed-in users can query **their own** scans (`where ownerUid == uid`), newest first.
+- **Claim flow**: ran a free scan before signing up? `POST /claimScan { scanId }` (auth required) assigns an ownerless scan to you. Already-owned scans can't be re-claimed (409); unknown ids 404.
+- **Token verification**: authenticated endpoints (`/me`, `/claimScan`) reject missing/invalid/expired ID tokens with 401 (Admin `verifyIdToken`). `createScan` accepts no-token (anonymous) but rejects a *present-but-invalid* token with 401.
+
+### Isolation & fix-locking (rules-enforced)
+
+`firestore.rules` is the source of truth (tested via the client SDK, not Admin):
+- `users/{uid}` — a user reads/writes only their own doc, and **cannot change `plan`** (no self-upgrade); never enumerable.
+- `scans/{id}` — `get` if `ownerUid == null` (anon, public-by-id) or `request.auth.uid == ownerUid`; `list` **only** where `ownerUid == request.auth.uid` (you can list only your own; anon scans aren't enumerable, others' aren't readable); no client writes.
+- `findings` inherit the parent scan's readability; `findings/{fid}/private/fix` (`fix`/`fixPrompt`) is **denied to all clients** — even an authenticated owner on the free plan can't read it. The paywall stays enforced at the data layer until Slice 6.
 
 ```
 POST /createScan ──► scans/{id} (queued) ──► Queue ──► Worker /runScan
@@ -51,7 +66,7 @@ So an unauthenticated client (or anyone poking the browser's network tab) litera
 
 ## Throwaway dev UI
 
-`dev-ui/` is a **throwaway** dev harness — **not the product frontend** (the designed frontend integrates much later). It's a single unstyled page (`index.html` + `app.js`) that loads Firebase from the gstatic CDN, calls `POST /createScan`, and subscribes to the emulator to stream findings live with locked-fix placeholders. It's served by the local dev-server (same origin, no build step).
+`dev-ui/` is a **throwaway** dev harness — **not the product frontend** (the designed frontend integrates much later). It's a single unstyled page (`index.html` + `app.js`) that loads Firebase from the gstatic CDN and, against the emulator: signs up / logs in (email + Google + GitHub) / logs out, calls `POST /createScan` (with the ID token when signed in), streams findings live with locked-fix placeholders, shows your **my-scans** list, and offers a **claim** button. Served by the local dev-server (same origin, no build step).
 
 ```bash
 npm install

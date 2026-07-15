@@ -1,36 +1,66 @@
 rules_version = '2';
 
-// Slice 3 — public free-scan read model.
+// Slice 4 — ownership-enforced read model.
 //
-// A free scan has no owner yet (auth arrives in Slice 4), so a scan is readable
-// by anyone who knows its (unguessable, 20-char) scanId — but the collection is
-// NOT enumerable, and the paid fix content is NOT client-readable. All writes go
-// through the Admin SDK (worker + API), which bypasses these rules, so clients
-// can never write.
+// A scan is either anonymous (ownerUid == null: the free public path, readable
+// by whoever knows its unguessable id) or owned (ownerUid == a user's uid).
+// Users see ONLY their own owned scans + their own profile. All writes to scans
+// and users' protected fields go through the Admin SDK (server), which bypasses
+// these rules; clients can never escalate their plan or write scan docs.
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // A scan doc is readable if it's anonymous, or owned by the caller.
+    function scanReadable(scanId) {
+      let s = get(/databases/$(database)/documents/scans/$(scanId)).data;
+      return s.ownerUid == null || (signedIn() && request.auth.uid == s.ownerUid);
+    }
+
+    // ---- users/{uid} : a user may only touch their OWN doc ----
+    match /users/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow list: if false;                       // never enumerable
+      // May self-create, but only with plan 'free' (no self-upgrade).
+      allow create: if signedIn() && request.auth.uid == uid
+                    && request.resource.data.plan == 'free'
+                    && request.resource.data.uid == uid;
+      // May edit profile fields, but NOT plan or uid (billing changes plan
+      // server-side in Slice 6).
+      allow update: if signedIn() && request.auth.uid == uid
+                    && request.resource.data.plan == resource.data.plan
+                    && request.resource.data.uid == resource.data.uid;
+      allow delete: if false;
+    }
+
+    // ---- scans/{scanId} ----
     match /scans/{scanId} {
-      // Read a known scan by id, but do NOT allow listing/enumerating scans.
-      allow get: if true;
-      allow list: if false;
-      // No client writes, ever.
+      // Read a single scan by id: anonymous scans are public-by-id; owned scans
+      // only by their owner.
+      allow get: if resource.data.ownerUid == null
+                 || (signedIn() && request.auth.uid == resource.data.ownerUid);
+      // Listing is ONLY ever your own scans: every candidate doc must be owned
+      // by you. This makes a `where('ownerUid','==', myUid)` query pass and any
+      // broader/other-user/anonymous list fail.
+      allow list: if signedIn() && request.auth.uid == resource.data.ownerUid;
+      // Clients never write scan docs (createScan/claimScan go through the API).
       allow write: if false;
 
+      // Findings inherit the parent scan's readability.
       match /findings/{findingId} {
-        // Stream/read the findings of a KNOWN scan (get + list within this
-        // scan). You still must know the parent scanId to reach this path.
-        allow get, list: if true;
+        allow get, list: if scanReadable(scanId);
         allow write: if false;
 
-        // Paid content (fix / fixPrompt) is locked at the data layer: clients
-        // cannot read it at all. Only the Admin SDK (server) can.
+        // Paid content stays locked to ALL clients until billing (Slice 6).
         match /private/{doc} {
           allow read, write: if false;
         }
       }
     }
 
-    // Everything else is denied by default (no explicit allow).
+    // Everything else denied by default.
   }
 }

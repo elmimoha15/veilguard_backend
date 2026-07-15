@@ -6,12 +6,12 @@
   "type": "module",
   "engines": { "node": ">=18.0.0" },
   "scripts": {
-    "emulators": "PATH=\"$PWD/.jre/bin:$PATH\" firebase emulators:start --only firestore --project demo-veilguard",
+    "emulators": "PATH=\"$PWD/.jre/bin:$PATH\" firebase emulators:start --only firestore,auth --project demo-veilguard",
     "worker": "tsx worker/src/index.ts",
-    "dev:all": "PATH=\"$PWD/.jre/bin:$PATH\" ALLOW_PRIVATE_TARGETS=1 firebase emulators:exec --only firestore --project demo-veilguard \"tsx functions/src/local-server.ts\"",
-    "trigger": "PATH=\"$PWD/.jre/bin:$PATH\" firebase emulators:exec --only firestore --project demo-veilguard \"tsx scripts/trigger-scan.ts\"",
-    "test": "PATH=\"$PWD/.jre/bin:$PATH\" firebase emulators:exec --only firestore --project demo-veilguard \"vitest run\"",
-    "gate": "PATH=\"$PWD/.jre/bin:$PATH\" firebase emulators:exec --only firestore --project demo-veilguard \"tsx test/gate.ts\"",
+    "dev:all": "PATH=\"$PWD/.jre/bin:$PATH\" ALLOW_PRIVATE_TARGETS=1 firebase emulators:exec --only firestore,auth --project demo-veilguard \"tsx functions/src/local-server.ts\"",
+    "trigger": "PATH=\"$PWD/.jre/bin:$PATH\" firebase emulators:exec --only firestore,auth --project demo-veilguard \"tsx scripts/trigger-scan.ts\"",
+    "test": "PATH=\"$PWD/.jre/bin:$PATH\" firebase emulators:exec --only firestore,auth --project demo-veilguard \"vitest run\"",
+    "gate": "PATH=\"$PWD/.jre/bin:$PATH\" firebase emulators:exec --only firestore,auth --project demo-veilguard \"tsx test/gate.ts\"",
     "typecheck": "tsc --noEmit",
     "build": "tsc -p tsconfig.build.json"
   },

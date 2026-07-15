@@ -6,6 +6,7 @@ export type { Finding, ScanReport, ScanProgress, Target };
 export { FindingSchema };
 
 export type ScanStatus = 'queued' | 'running' | 'done' | 'error';
+export type Plan = 'free' | 'guard' | 'fixpack';
 
 /** Input accepted by POST /createScan. */
 export const CreateScanInputSchema = z.object({
@@ -13,10 +14,27 @@ export const CreateScanInputSchema = z.object({
 });
 export type CreateScanInput = z.infer<typeof CreateScanInputSchema>;
 
+/** The `users/{uid}` document. Created on first authenticated call. */
+export const UserDocSchema = z.object({
+  uid: z.string(),
+  email: z.string().optional(),
+  displayName: z.string().optional(),
+  createdAt: z.string(),
+  // 'free' by default; only the server (Slice 6 billing) may change it.
+  plan: z.enum(['free', 'guard', 'fixpack']),
+  provider: z.string().optional(),
+  // Reserved for Slice 5 (GitHub/Supabase). Empty for now.
+  connections: z.record(z.string(), z.unknown()).default({}),
+  alertEmail: z.string().optional(),
+});
+export type UserDoc = z.infer<typeof UserDocSchema>;
+
 /** The `scans/{scanId}` document. Timestamps are ISO strings for portability. */
 export const ScanDocSchema = z.object({
   id: z.string(),
   target: TargetSchema,
+  // null = anonymous free scan (unchanged); a uid = owned by that user.
+  ownerUid: z.string().nullable().default(null),
   status: z.enum(['queued', 'running', 'done', 'error']),
   grade: GradeSchema.optional(),
   score: z.number().int().optional(),

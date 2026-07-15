@@ -3,7 +3,10 @@ import express, { type Request, type Response } from 'express';
 import { config } from '../../shared/src/config.js';
 import { makeQueue } from '../../shared/src/queue.js';
 import { runScanJob } from '../../worker/src/runScan.js';
+import { ensureUser } from '../../shared/src/firestore.js';
 import { handleCreateScan } from './createScan.js';
+import { handleClaimScan } from './claimScan.js';
+import { resolveAuth, requireAuth, AuthError } from './auth.js';
 
 const DEV_UI_DIR = fileURLToPath(new URL('../../dev-ui', import.meta.url));
 
@@ -24,16 +27,48 @@ export function createDevServer() {
 
   // Config the browser UI needs to reach the Firestore emulator.
   app.get('/dev-config', (_req: Request, res: Response) => {
+    const fs = config.firestoreEmulatorHost || '127.0.0.1:8080';
+    const authHost = config.authEmulatorHost || '127.0.0.1:9099';
     res.json({
       projectId: config.projectId,
-      emulatorHost: (config.firestoreEmulatorHost || '127.0.0.1:8080').split(':')[0],
-      emulatorPort: Number((config.firestoreEmulatorHost || '127.0.0.1:8080').split(':')[1] || 8080),
+      emulatorHost: fs.split(':')[0],
+      emulatorPort: Number(fs.split(':')[1] || 8080),
+      authEmulatorUrl: authHost.startsWith('http') ? authHost : `http://${authHost}`,
     });
   });
 
   app.post('/createScan', async (req: Request, res: Response) => {
     const ip = req.ip || req.socket.remoteAddress || 'local';
-    const result = await handleCreateScan(req.body, queue, { clientIp: ip, allowPrivateTargets: true });
+    try {
+      // Anonymous is allowed; a valid token makes the scan owned.
+      const auth = await resolveAuth(req.headers.authorization);
+      if (auth) await ensureUser(auth);
+      const result = await handleCreateScan(req.body, queue, {
+        clientIp: ip,
+        allowPrivateTargets: true,
+        ownerUid: auth?.uid ?? null,
+      });
+      res.status(result.status).json(result.body);
+    } catch (e) {
+      if (e instanceof AuthError) return void res.status(e.status).json({ error: e.message });
+      throw e;
+    }
+  });
+
+  // Create/return the caller's user record (auth required).
+  app.post('/me', async (req: Request, res: Response) => {
+    try {
+      const auth = await requireAuth(req.headers.authorization);
+      const user = await ensureUser(auth);
+      res.json(user);
+    } catch (e) {
+      if (e instanceof AuthError) return void res.status(e.status).json({ error: e.message });
+      throw e;
+    }
+  });
+
+  app.post('/claimScan', async (req: Request, res: Response) => {
+    const result = await handleClaimScan(req.body, req.headers.authorization);
     res.status(result.status).json(result.body);
   });
 
