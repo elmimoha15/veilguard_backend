@@ -8,8 +8,7 @@
  */
 import { resolve } from 'node:path';
 import { makeQueue } from '../shared/src/queue.js';
-import { getDb } from '../shared/src/firestore.js';
-import { handleCreateScan } from '../functions/src/createScan.js';
+import { getDb, createScanDoc } from '../shared/src/firestore.js';
 import { runScanJob } from '../worker/src/runScan.js';
 import type { ScanDoc, Finding } from '../shared/src/types.js';
 
@@ -21,13 +20,11 @@ async function main() {
     ? { type: 'url' as const, value: arg }
     : { type: 'repo' as const, value: resolve(arg) };
 
+  // Internal pipeline demo (bypasses the public URL-only guard so it can also
+  // showcase a repo/white-box scan). The public browser path is the dev-ui.
   const queue = makeQueue(runScanJob); // memory queue → in-process worker
-  const res = await handleCreateScan({ target }, queue);
-  if (res.status !== 202) {
-    console.error('createScan failed', res);
-    process.exit(1);
-  }
-  const { scanId } = res.body as { scanId: string };
+  const scanId = await createScanDoc(target);
+  await queue.enqueue({ scanId });
   console.log(`\n▶ createScan → scanId=${scanId} (status should be queued)\n`);
 
   const db = getDb();

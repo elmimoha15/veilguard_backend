@@ -17,7 +17,7 @@ export function createApiApp() {
 
   app.post('/createScan', async (req: Request, res: Response) => {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
-    const result = await handleCreateScan(req.body, queue, ip);
+    const result = await handleCreateScan(req.body, queue, { clientIp: ip });
     res.status(result.status).json(result.body);
   });
 

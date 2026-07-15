@@ -1,6 +1,6 @@
 # veilguard-backend
 
-**Slice 2** of the Veilguard backend: the asynchronous **scan service**. It wraps the `veilguard-scanner` engine (Slice 1) so a scan can be triggered by an API call, run in the background by a worker, and streamed into Firestore live — no web frontend and no user auth yet.
+**Slices 2–3** of the Veilguard backend: the asynchronous **scan service** (Slice 2) plus the browser-facing **free-scan path** (Slice 3). A scan is triggered by an API call, run in the background by a worker, and streamed into Firestore live; a throwaway dev UI lets you paste a URL and watch findings appear. No user auth or billing yet.
 
 ```
 POST /createScan ──► scans/{id} (queued) ──► Queue ──► Worker /runScan
@@ -25,17 +25,49 @@ The scanner engine is a **local file dependency** (`"veilguard-scanner": "file:.
 - The Firestore emulator needs **Java**. This repo provisions a portable JRE at `.jre/` (gitignored); the npm scripts put it on `PATH` automatically. If you have a system JDK you can delete `.jre/` and it'll use that.
 - `firebase-tools` on your `PATH` (the scripts call `firebase`).
 
-## Run it locally, end to end
+## The free-scan path (Slice 3)
+
+The public flow, as the browser hits it:
+
+```
+[dev-ui]  paste URL → POST /createScan  ──►  scans/{id} (queued)
+                                              │  (guard: http/https only,
+                                              │   no localhost/private IPs,
+                                              │   url-only — repos need a
+                                              │   code connection, Slice 5)
+   client SDK subscribes to scans/{id}  ◄─────┘  worker streams findings
+   + scans/{id}/findings  (rules-enforced)      grade shown when done
+```
+
+**Fix-locking (the paywall, enforced at the data layer — not just the UI).**
+Each finding is split when written:
+
+- `scans/{id}/findings/{fid}` — public fields (title, whyItMatters, severity, category, location). Client-readable.
+- `scans/{id}/findings/{fid}/private/fix` — `{ fix, fixPrompt }`. **`firestore.rules` denies this to all clients**; only the Admin SDK (server) can read it.
+
+So an unauthenticated client (or anyone poking the browser's network tab) literally **cannot retrieve the fix content** — it isn't in the readable document and the private doc is denied. The dev-ui shows a `🔒 Fix locked — upgrade to unlock` placeholder. (Actual payment/unlock lands in Slice 6.) We chose option (b)+(a): omit the fields from the public doc **and** keep them in a rules-denied `private` subcollection.
+
+**No enumeration.** `firestore.rules` allows `get` on a known `scans/{id}` and `get/list` on its `findings`, but denies `list` on the `scans` collection — so a client can read a scan it has the (unguessable) id for, but cannot enumerate others' scans.
+
+## Throwaway dev UI
+
+`dev-ui/` is a **throwaway** dev harness — **not the product frontend** (the designed frontend integrates much later). It's a single unstyled page (`index.html` + `app.js`) that loads Firebase from the gstatic CDN, calls `POST /createScan`, and subscribes to the emulator to stream findings live with locked-fix placeholders. It's served by the local dev-server (same origin, no build step).
 
 ```bash
 npm install
+npm run dev:all
+# → open http://127.0.0.1:8787  (boots emulator + dev-server + in-process worker)
+#   paste a URL (e.g. https://example.com) and click "Run free scan"
+#   or auto-run:  http://127.0.0.1:8787/?auto=https://example.com
+```
 
-# One command: boots the Firestore emulator, wires an in-memory queue to the
-# in-process worker, scans the QuickCart fixture, and tails findings live.
+## Run the service pipeline directly
+
+```bash
+# Boots the Firestore emulator, wires an in-memory queue to the in-process
+# worker, scans the QuickCart fixture (repo path — internal pipeline), tails live.
 npm run trigger
-# or scan something else:
 npm run trigger -- https://example.com
-npm run trigger -- ../some/local/repo
 ```
 
 Running pieces separately:

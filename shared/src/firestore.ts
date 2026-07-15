@@ -74,12 +74,32 @@ export async function updateProgress(id: string, progress: ScanProgress): Promis
 }
 
 /**
- * Write a finding to `scans/{id}/findings/{findingId}`. The id is the engine's
- * deterministic hash, so writing the same finding twice (retry) is a no-op
- * overwrite rather than a duplicate.
+ * Write a finding, SPLITTING the paid content out of the client-readable doc:
+ *   scans/{id}/findings/{fid}          → public fields (no fix / fixPrompt)
+ *   scans/{id}/findings/{fid}/private/fix → { fix, fixPrompt } (server-only)
+ *
+ * firestore.rules denies clients the `private` subcollection, so the free
+ * (unauthenticated) client literally cannot read the fix — it's locked at the
+ * data layer, not merely hidden in the UI. The id is the engine's deterministic
+ * hash, so retries overwrite rather than duplicate.
  */
 export async function writeFinding(scanId: string, finding: Finding): Promise<void> {
-  await findingsRef(scanId).doc(engineFindingId(finding)).set(finding);
+  const { fix, fixPrompt, ...pub } = finding;
+  const fid = engineFindingId(finding);
+  const docRef = findingsRef(scanId).doc(fid);
+  await docRef.set(pub);
+  if (fix !== undefined || fixPrompt !== undefined) {
+    await docRef.collection('private').doc('fix').set({ fix, fixPrompt });
+  }
+}
+
+/** Admin-only read of the locked fix content (used by the worker/tests, never a client). */
+export async function readPrivateFix(
+  scanId: string,
+  findingId: string,
+): Promise<{ fix?: string; fixPrompt?: string } | null> {
+  const snap = await findingsRef(scanId).doc(findingId).collection('private').doc('fix').get();
+  return snap.exists ? (snap.data() as { fix?: string; fixPrompt?: string }) : null;
 }
 
 export async function countFindings(scanId: string): Promise<number> {
@@ -87,9 +107,12 @@ export async function countFindings(scanId: string): Promise<number> {
   return snap.data().count;
 }
 
-export async function listFindings(scanId: string): Promise<Finding[]> {
+/** Public finding fields (fix/fixPrompt live in the private subcollection). */
+export type PublicFinding = Omit<Finding, 'fix' | 'fixPrompt'>;
+
+export async function listFindings(scanId: string): Promise<PublicFinding[]> {
   const snap = await findingsRef(scanId).get();
-  return snap.docs.map((d) => d.data() as Finding);
+  return snap.docs.map((d) => d.data() as PublicFinding);
 }
 
 export const startedFields = () => ({ startedAt: nowIso() });

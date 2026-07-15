@@ -1,11 +1,11 @@
 import { createServer, type Server } from 'node:http';
 import { resolve } from 'node:path';
 import { makeQueue } from '../shared/src/queue.js';
-import { getDb, getScan, listFindings } from '../shared/src/firestore.js';
-import { handleCreateScan } from '../functions/src/createScan.js';
+import { getDb, getScan, listFindings, createScanDoc, type PublicFinding } from '../shared/src/firestore.js';
+import { handleCreateScan, type CreateScanOptions } from '../functions/src/createScan.js';
 import { runScanJob } from '../worker/src/runScan.js';
 import { resetRateLimit } from '../functions/src/rate-limit.js';
-import type { ScanDoc, Finding, Target } from '../shared/src/types.js';
+import type { ScanDoc, Target } from '../shared/src/types.js';
 
 export const QUICKCART_PATH = resolve(process.cwd(), '../veilguard-scanner/test-fixtures/vulnerable/quickcart');
 
@@ -14,10 +14,21 @@ export function localQueue() {
   return makeQueue(runScanJob);
 }
 
-/** Call createScan exactly as the API would, returning the raw result. */
-export async function createScan(target: Target) {
+/**
+ * Internal service path: create the scan doc + enqueue directly, bypassing the
+ * public abuse guard. Represents the pipeline the worker runs (repo or url).
+ * Slice-2 tests use this.
+ */
+export async function createScan(target: Target): Promise<{ status: number; body: { scanId: string } }> {
+  const scanId = await createScanDoc(target);
+  await localQueue().enqueue({ scanId });
+  return { status: 202, body: { scanId } };
+}
+
+/** Public endpoint path (guarded + rate-limited), as the browser/API hits it. */
+export async function createScanPublic(target: Target, opts: CreateScanOptions = {}) {
   resetRateLimit();
-  return handleCreateScan({ target }, localQueue());
+  return handleCreateScan({ target }, localQueue(), opts);
 }
 
 export async function waitForTerminal(scanId: string, timeoutMs = 60_000): Promise<ScanDoc> {
@@ -33,7 +44,7 @@ export async function waitForTerminal(scanId: string, timeoutMs = 60_000): Promi
 }
 
 /** createScan → wait for terminal → return the doc + findings. */
-export async function runFullScan(target: Target): Promise<{ scanId: string; doc: ScanDoc; findings: Finding[] }> {
+export async function runFullScan(target: Target): Promise<{ scanId: string; doc: ScanDoc; findings: PublicFinding[] }> {
   const res = await createScan(target);
   if (res.status !== 202) throw new Error(`createScan failed: ${JSON.stringify(res)}`);
   const { scanId } = res.body as { scanId: string };

@@ -29,4 +29,11 @@ export const config = {
   // createScan rate limit
   rateLimitWindowMs: num('RATE_LIMIT_WINDOW_MS', 60_000),
   rateLimitMax: num('RATE_LIMIT_MAX', 5),
+
+  // Local-dev / test seam: allow localhost & private-IP scan targets on the
+  // public path. Default false (secure). Never enable in production.
+  allowPrivateTargets: process.env.ALLOW_PRIVATE_TARGETS === '1' || process.env.ALLOW_PRIVATE_TARGETS === 'true',
+
+  // Combined local dev-server (serves the throwaway UI + createScan + worker).
+  devServerPort: num('DEV_SERVER_PORT', 8787),
 } as const;
