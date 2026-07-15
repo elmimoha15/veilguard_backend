@@ -1,8 +1,8 @@
 import { initializeApp, getApps } from 'firebase-admin/app';
-import { getFirestore, type Firestore } from 'firebase-admin/firestore';
+import { getFirestore, FieldValue, type Firestore } from 'firebase-admin/firestore';
 import { findingId as engineFindingId } from 'veilguard-scanner';
 import { config } from './config.js';
-import type { Finding, ScanDoc, ScanProgress, ScanStatus, Target, UserDoc } from './types.js';
+import type { Finding, Provider, ScanDoc, ScanProgress, ScanStatus, Target, UserDoc } from './types.js';
 
 let db: Firestore | null = null;
 
@@ -33,6 +33,7 @@ export async function createScanDoc(target: Target, ownerUid: string | null = nu
   const doc: ScanDoc = {
     id: ref.id,
     target,
+    type: 'url',
     ownerUid,
     status: 'queued',
     createdAt: nowIso(),
@@ -44,6 +45,26 @@ export async function createScanDoc(target: Target, ownerUid: string | null = nu
 export async function getScan(id: string): Promise<ScanDoc | null> {
   const snap = await scanRef(id).get();
   return snap.exists ? (snap.data() as ScanDoc) : null;
+}
+
+/** Create a deep (white-box, connected) scan doc owned by uid. */
+export async function createDeepScanDoc(
+  uid: string,
+  sources: { github?: boolean; supabase?: boolean; url?: string },
+): Promise<string> {
+  const ref = getDb().collection('scans').doc();
+  const label = sources.github ? 'github' : sources.supabase ? 'supabase' : (sources.url ?? 'deep');
+  const doc: ScanDoc = {
+    id: ref.id,
+    target: { type: 'repo', value: `connected:${label}` },
+    type: 'deep',
+    sources,
+    ownerUid: uid,
+    status: 'queued',
+    createdAt: nowIso(),
+  };
+  await ref.set(doc);
+  return ref.id;
 }
 
 /**
@@ -185,4 +206,48 @@ export async function claimScan(scanId: string, uid: string): Promise<ClaimResul
 export async function listUserScans(uid: string): Promise<ScanDoc[]> {
   const snap = await getDb().collection('scans').where('ownerUid', '==', uid).orderBy('createdAt', 'desc').get();
   return snap.docs.map((d) => d.data() as ScanDoc);
+}
+
+/* -------------------------------------------------------------------------- */
+/* Connections (Slice 5)                                                       */
+/*                                                                             */
+/* Non-secret metadata lives (client-readable) at users/{uid}.connections.     */
+/* Encrypted credentials live ONLY at secrets/{uid} — denied to all clients by */
+/* firestore.rules and never returned to a client.                            */
+/* -------------------------------------------------------------------------- */
+
+const secretRef = (uid: string) => getDb().collection('secrets').doc(uid);
+
+/** Store an encrypted credential + client-readable metadata for a provider. */
+export async function setConnection(
+  uid: string,
+  provider: Provider,
+  meta: Record<string, unknown>,
+  encryptedSecret: string,
+): Promise<void> {
+  await secretRef(uid).set({ [provider]: encryptedSecret }, { merge: true });
+  await userRef(uid).set({ connections: { [provider]: { ...meta, connectedAt: nowIso() } } }, { merge: true });
+}
+
+/** Read + return the ENCRYPTED credential blob (server-only). Null if absent. */
+export async function getEncryptedSecret(uid: string, provider: Provider): Promise<string | null> {
+  const snap = await secretRef(uid).get();
+  const v = snap.exists ? (snap.data() as Record<string, unknown>)[provider] : undefined;
+  return typeof v === 'string' ? v : null;
+}
+
+export async function getConnectionMeta(uid: string, provider: Provider): Promise<Record<string, unknown> | null> {
+  const u = await getUser(uid);
+  const conns = (u as unknown as { connections?: Record<string, Record<string, unknown>> })?.connections;
+  return conns?.[provider] ?? null;
+}
+
+export async function hasConnection(uid: string, provider: Provider): Promise<boolean> {
+  return (await getEncryptedSecret(uid, provider)) !== null;
+}
+
+/** Revoke: delete the encrypted credential AND the metadata. */
+export async function deleteConnection(uid: string, provider: Provider): Promise<void> {
+  await secretRef(uid).set({ [provider]: FieldValue.delete() }, { merge: true });
+  await userRef(uid).set({ connections: { [provider]: FieldValue.delete() } }, { merge: true });
 }

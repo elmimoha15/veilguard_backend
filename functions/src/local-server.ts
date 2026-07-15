@@ -6,6 +6,8 @@ import { runScanJob } from '../../worker/src/runScan.js';
 import { ensureUser } from '../../shared/src/firestore.js';
 import { handleCreateScan } from './createScan.js';
 import { handleClaimScan } from './claimScan.js';
+import { handleCreateDeepScan } from './createDeepScan.js';
+import { handleConnectGitHub, handleConnectSupabase, handleDisconnect } from './connect.js';
 import { resolveAuth, requireAuth, AuthError } from './auth.js';
 
 const DEV_UI_DIR = fileURLToPath(new URL('../../dev-ui', import.meta.url));
@@ -70,6 +72,24 @@ export function createDevServer() {
   app.post('/claimScan', async (req: Request, res: Response) => {
     const result = await handleClaimScan(req.body, req.headers.authorization);
     res.status(result.status).json(result.body);
+  });
+
+  // --- Slice 5: connections + deep scans ---
+  app.post('/connectGitHub', async (req: Request, res: Response) => {
+    const r = await handleConnectGitHub(req.body, req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
+  app.post('/connectSupabase', async (req: Request, res: Response) => {
+    const r = await handleConnectSupabase(req.body, req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
+  app.post('/disconnect', async (req: Request, res: Response) => {
+    const r = await handleDisconnect(req.body, req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
+  app.post('/createDeepScan', async (req: Request, res: Response) => {
+    const r = await handleCreateDeepScan(req.body, queue, req.headers.authorization);
+    res.status(r.status).json(r.body);
   });
 
   app.use(express.static(DEV_UI_DIR));

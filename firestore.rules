@@ -20,6 +20,13 @@ service cloud.firestore {
       return s.ownerUid == null || (signedIn() && request.auth.uid == s.ownerUid);
     }
 
+    // ---- secrets/{uid} : encrypted credentials — DENIED to all clients ----
+    // Only the Admin SDK (server) ever reads/writes these. A user's GitHub token
+    // / Supabase connection string is never client-readable, encrypted or not.
+    match /secrets/{uid} {
+      allow read, write: if false;
+    }
+
     // ---- users/{uid} : a user may only touch their OWN doc ----
     match /users/{uid} {
       allow get: if signedIn() && request.auth.uid == uid;

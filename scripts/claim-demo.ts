@@ -19,7 +19,7 @@ async function main() {
       done(`http://127.0.0.1:${typeof a === 'object' && a ? a.port : 0}`);
     });
   });
-  const post = async (path: string, body: unknown, token?: string) =>
+  const post = async (path: string, body: unknown, token?: string): Promise<any> =>
     (await fetch(`${baseUrl}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) })).json();
 
   console.log('\n1) Anonymous free scan (no login)…');

@@ -117,5 +117,30 @@ async function runScan() {
 }
 
 $('scan').addEventListener('click', runScan);
+
+/* ---- Slice 5: connections + deep scan (mock) ---- */
+// In mock mode the server points at local fixtures; the paths below are
+// resolved server-side. For the dev harness we just pass hints.
+$('connectGh').onclick = async () => {
+  const r = await api('/connectGitHub', { repoPath: '../veilguard-scanner/test-fixtures/vulnerable/quickcart' });
+  $('connstatus').textContent = r ? `GitHub connected: ${r.repo} (scopes: ${(r.scopes || []).join(', ')}, write=${r.writeAccess})` : 'connect failed';
+};
+$('connectSb').onclick = async () => {
+  const r = await api('/connectSupabase', { policiesPath: 'test-fixtures/supabase-broken-rls', projectRef: 'demo' });
+  $('connstatus').textContent = r ? `Supabase connected: ${r.projectRef} (${r.access})` : 'connect failed';
+};
+$('disconnectGh').onclick = async () => {
+  await api('/disconnect', { provider: 'github' });
+  $('connstatus').textContent = 'GitHub disconnected';
+};
+$('deep').onclick = async () => {
+  reset();
+  $('status').textContent = 'creating deep scan…';
+  const body = await api('/createDeepScan', { github: true });
+  if (!body?.scanId) { $('status').textContent = 'deep scan failed (connect GitHub first?)'; return; }
+  lastScanId = body.scanId;
+  subscribe(body.scanId);
+};
+
 const auto = new URLSearchParams(location.search).get('auto');
 if (auto) { $('url').value = auto; runScan(); }

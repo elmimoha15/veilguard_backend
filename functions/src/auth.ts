@@ -1,4 +1,5 @@
 import { getAuth } from 'firebase-admin/auth';
+import { getDb } from '../../shared/src/firestore.js';
 
 /** Thrown when auth fails; carries the HTTP status to return. */
 export class AuthError extends Error {
@@ -33,6 +34,7 @@ export async function resolveAuth(authHeader: string | undefined): Promise<AuthI
   const token = bearer(authHeader);
   if (!token) return null;
   try {
+    getDb(); // ensure the Admin app is initialized (with the right projectId)
     const decoded = await getAuth().verifyIdToken(token);
     return {
       uid: decoded.uid,

@@ -1,6 +1,7 @@
 import { existsSync, statSync } from 'node:fs';
 import { buildContext, runScan as runEngine } from 'veilguard-scanner';
-import type { ScanProgress } from 'veilguard-scanner';
+import type { ScanProgress, Grade, Counts } from 'veilguard-scanner';
+import { buildDeepWorkspace, runDeepEngine, removeWorkspace, workspacePath } from './deepScan.js';
 import { config } from '../../shared/src/config.js';
 import {
   getScan,
@@ -62,35 +63,51 @@ export async function runScanJob(job: ScanJob): Promise<void> {
     return;
   }
 
+  // Deep (white-box, connected) scans fetch source into an ephemeral workspace
+  // that MUST be deleted no matter what — hence the finally block below.
+  let workspace: string | null = null;
+
   try {
-    assertTargetUsable(doc.target);
+    let result: { grade: Grade; score: number; counts: Counts };
 
-    const ctx = await withTimeout(buildContext(doc.target), config.scanTimeoutMs);
-
-    // A URL target that never responded is an error, not an empty pass.
-    if (doc.target.type === 'url' && ctx.http && !ctx.http.reachable) {
-      throw new Error(`target URL unreachable: ${doc.target.value}`);
+    if (doc.type === 'deep') {
+      if (!doc.ownerUid) throw new Error('deep scan requires an owner');
+      // Record the workspace path BEFORE building it, so the finally block
+      // always cleans up even if buildDeepWorkspace throws mid-fetch.
+      workspace = workspacePath(scanId);
+      await withTimeout(buildDeepWorkspace(scanId, doc.ownerUid, doc), config.scanTimeoutMs);
+      result = await withTimeout(runDeepEngine(scanId, workspace, doc), config.scanTimeoutMs);
+    } else {
+      assertTargetUsable(doc.target);
+      const ctx = await withTimeout(buildContext(doc.target), config.scanTimeoutMs);
+      // A URL target that never responded is an error, not an empty pass.
+      if (doc.target.type === 'url' && ctx.http && !ctx.http.reachable) {
+        throw new Error(`target URL unreachable: ${doc.target.value}`);
+      }
+      result = await withTimeout(
+        runEngine(ctx, {
+          skipEngines: true,
+          onFinding: (finding) => writeFinding(scanId, finding),
+          onProgress: (progress: ScanProgress) => updateProgress(scanId, progress),
+        }),
+        config.scanTimeoutMs,
+      );
     }
 
-    const report = await withTimeout(
-      runEngine(ctx, {
-        skipEngines: true,
-        onFinding: (finding) => writeFinding(scanId, finding),
-        onProgress: (progress: ScanProgress) => updateProgress(scanId, progress),
-      }),
-      config.scanTimeoutMs,
-    );
-
     await setStatus(scanId, 'done', {
-      grade: report.grade,
-      score: report.score,
-      counts: report.counts,
+      grade: result.grade,
+      score: result.score,
+      counts: result.counts,
       ...finishedFields(),
     });
-    console.log(`[worker] runScan: ${scanId} done — grade ${report.grade}, ${report.counts.critical} critical`);
+    console.log(`[worker] runScan: ${scanId} done — grade ${result.grade}, ${result.counts.critical} critical`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await setStatus(scanId, 'error', { error: message, ...finishedFields() });
     console.error(`[worker] runScan: ${scanId} error — ${message}`);
+  } finally {
+    // Guaranteed cleanup: the user's source never outlives the scan, even on
+    // error/timeout. Source is never written to Firestore — only findings.
+    if (workspace) removeWorkspace(workspace);
   }
 }

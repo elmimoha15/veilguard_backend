@@ -37,4 +37,18 @@ export const config = {
 
   // Combined local dev-server (serves the throwaway UI + createScan + worker).
   devServerPort: num('DEV_SERVER_PORT', 8787),
+
+  // --- Slice 5: connected deep scans ---
+  // Credential-encryption key. In prod set a real high-entropy secret; on the
+  // emulator we fall back to a clearly-insecure dev key so local runs work.
+  get encryptionKey(): string {
+    return process.env.ENCRYPTION_KEY || (this.usingEmulator ? 'dev-insecure-emulator-key-do-not-use-in-prod' : '');
+  },
+  // MOCK connection providers: connect points at a local fixture instead of the
+  // real GitHub/Supabase APIs. Auto-on under the emulator; explicit flag otherwise.
+  get mockConnections(): boolean {
+    return process.env.MOCK_CONNECTIONS === '1' || process.env.MOCK_CONNECTIONS === 'true' || this.usingEmulator;
+  },
+  // Ephemeral workspace caps for deep scans.
+  deepScanMaxBytes: num('DEEP_SCAN_MAX_BYTES', 200 * 1024 * 1024), // 200MB
 } as const;

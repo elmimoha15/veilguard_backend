@@ -1,6 +1,29 @@
 # veilguard-backend
 
-**Slices 2–4** of the Veilguard backend: the asynchronous **scan service** (Slice 2), the browser-facing **free-scan path** (Slice 3), and **auth & accounts** (Slice 4). A scan is triggered by an API call, run in the background by a worker, and streamed into Firestore live; a throwaway dev UI lets you sign up, paste a URL, and watch findings appear against your account. No billing yet.
+**Slices 2–5** of the Veilguard backend: the asynchronous **scan service** (Slice 2), the browser-facing **free-scan path** (Slice 3), **auth & accounts** (Slice 4), and **connected deep (white-box) scans** (Slice 5). A scan is triggered by an API call, run in the background by a worker, and streamed into Firestore live; a throwaway dev UI lets you sign up, connect a repo/DB, and watch real white-box findings appear against your account. No billing yet.
+
+## Connected deep scans (Slice 5)
+
+A signed-in user connects their **GitHub repo** and/or **Supabase project READ-ONLY**, and the worker runs the engine's **white-box** rules (hardcoded secrets, broken/missing RLS, SQL injection, unverified webhooks, insecure config, risky AI-rules files, dependency CVEs…) on their real code and DB policies — the highest-value findings.
+
+**Security properties (non-negotiable, gate-checked):**
+- **Read-only, least-privilege.** GitHub: `contents:read` + `metadata:read` on a **single repo** (a GitHub App install or a fine-grained PAT limited to that repo). Supabase: a **read-only** DB role / connection. No write/admin scopes, ever — we can't change your code even if we wanted to.
+- **Source is never stored.** The worker fetches source into an **ephemeral tmp workspace** (`os.tmpdir()/veilguard-ws/{scanId}`), scans it, and **deletes it in a `finally` block** — guaranteed even on error/timeout. Only redacted **findings** are persisted; never file contents or DB rows.
+- **Credentials are encrypted & client-unreadable.** Tokens/connection strings are AES-256-GCM encrypted (`shared/src/crypto.ts`) and stored only in `secrets/{uid}`, which `firestore.rules` **denies to all clients**. Non-secret metadata (which provider is connected) lives client-readable under `users/{uid}.connections`.
+- **Revocable.** `POST /disconnect { provider }` deletes the encrypted credential + metadata; future deep scans for that source fail with a clear "not connected" error.
+- **Owned & isolated.** Deep scans/findings inherit Slice-4 per-user isolation; a user can only scan their own connected resources.
+
+**Endpoints (auth required):** `POST /connectGitHub`, `POST /connectSupabase`, `POST /disconnect { provider }`, `POST /createDeepScan { github?, supabase?, url? }`. A deep scan can also include a URL, producing one unified grade over the whole app.
+
+### Encryption approach
+
+`ENCRYPTION_KEY` (env) is scrypt-derived to a 32-byte AES-256-GCM key. Ciphertext format `v1.<iv>.<tag>.<ct>` (base64url) is stored only server-side in `secrets/{uid}`. On the emulator a clearly-insecure dev key is used automatically; **production must set a real high-entropy `ENCRYPTION_KEY`** (Secret Manager / KMS). **Rotation:** deploy the new key alongside the old, re-encrypt every `secrets/*` blob (decrypt-with-old → encrypt-with-new), then retire the old key. (A KMS envelope-encryption upgrade is a good future step.)
+
+### MOCK mode (local/testing)
+
+Under the emulator (or `MOCK_CONNECTIONS=1`), the connect flows point at a **local fixture** instead of the real GitHub/Supabase APIs: `connectGitHub { repoPath }` and `connectSupabase { policiesPath }`. The worker copies the fixture into the ephemeral workspace exactly as a real clone would, so the full flow (fetch → scan → cleanup) is exercised without any real credentials. The gate uses the QuickCart repo fixture + a broken-RLS Supabase fixture.
+
+## Auth & accounts (Slice 4)
 
 ## Auth & accounts (Slice 4)
 
@@ -135,8 +158,16 @@ See `.env.example`. Key vars: `QUEUE_IMPL` (`memory` | `cloudtasks`), `GCLOUD_PR
   "createdAt", "startedAt?", "finishedAt?",
   "progress?": { "done", "total", "phase" } }
 ```
-`scans/{scanId}/findings/{findingId}`: the engine `Finding` (ruleId, category, severity, cwe, owasp, title, whyItMatters, evidence, location, fix, fixPrompt, confidence, mode). Fixes/fixPrompt are stored now; **paywall gating arrives in Slice 6.**
+`scans/{scanId}/findings/{findingId}`: the engine `Finding` **minus** `fix`/`fixPrompt` (those live in the rules-denied `findings/{fid}/private/fix`). A scan also has `type: 'url' | 'deep'` and, for deep scans, `ownerUid` + `sources`. `secrets/{uid}` holds encrypted credentials, denied to all clients.
+
+## Before first deploy
+
+- **`ENCRYPTION_KEY`** — set a real high-entropy secret from Secret Manager/KMS (the emulator dev key is insecure). Plan key rotation (re-encrypt `secrets/*`).
+- **GitHub** — create a **GitHub App** (or use fine-grained PATs) requesting **Contents: Read-only + Metadata: Read-only on a single repo**; wire the install/OAuth callback into `connectGitHub` (replace MOCK mode). No `repo` (write) or org scopes.
+- **Supabase** — provision a **read-only DB role** (or read-only connection string / schema+policies read); wire into `connectSupabase`.
+- **Queue/worker** — set `QUEUE_IMPL=cloudtasks`, `WORKER_URL`, the Cloud Tasks queue, and deploy the worker image (Cloud Run). Ensure the worker's tmp dir is ephemeral and sized for `DEEP_SCAN_MAX_BYTES`.
+- **`git`** must be on the worker image for real GitHub clones (the base image has it; mock mode doesn't need it).
 
 ## DEFERRED (carried forward)
 
-From Slice 1, still deferred until a later slice: deeper detection rules — full **active black-box probes** (GraphQL introspection, `alg:none` JWT forgery, `x-middleware-subrequest` bypass, source-map/admin-endpoint exposure), **IDOR/BOLA data-flow** + Server Action ownership analysis, **SSRF**, **prototype pollution**, NoSQL injection, and consuming the authored `semgrep-rules/*.yaml`. Slice 2 adds no new detection; it only wraps the engine as a service.
+From Slice 1, still deferred until a later slice: deeper detection rules — full **active black-box probes** (GraphQL introspection, `alg:none` JWT forgery, `x-middleware-subrequest` bypass, source-map/admin-endpoint exposure), **IDOR/BOLA data-flow** + Server Action ownership analysis, **SSRF**, **prototype pollution**, NoSQL injection, and consuming the authored `semgrep-rules/*.yaml`. Slices 2–5 add no new detection rules; they wrap the engine as a service and feed it real (free URL, then connected repo/DB) input.
