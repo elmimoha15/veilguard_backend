@@ -44,11 +44,16 @@
         <button id="logout">Log out</button>
         <div id="myscans" style="margin-top:8px;"></div>
         <div class="row" style="margin-top:8px;">
-          <button id="connectGh">Connect GitHub (mock)</button>
-          <button id="connectSb">Connect Supabase (mock)</button>
-          <button id="deep">Run deep scan</button>
-          <button id="disconnectGh">Disconnect GitHub</button>
+          <button id="connectGh">Connect GitHub</button>
+          <button id="connectSb">Connect Supabase</button>
         </div>
+        <div class="row">
+          <button id="deep">Run deep scan (GitHub)</button>
+          <button id="deepSb">Run deep scan (Supabase)</button>
+          <button id="disconnectGh">Disconnect GitHub</button>
+          <button id="disconnectSb">Disconnect Supabase</button>
+        </div>
+        <div id="connections" style="font-size:12px;color:#333;margin-top:6px;"></div>
         <div id="connstatus" style="font-size:12px;color:#555;"></div>
       </div>
     </fieldset>

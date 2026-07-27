@@ -14,3 +14,7 @@ firebase-debug.log
 firestore-debug.log
 ui-debug.log
 .firebase/
+secrets/
+
+# Local email-preview / scratch output
+tmp/

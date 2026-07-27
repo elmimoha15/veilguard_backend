@@ -13,7 +13,7 @@ A signed-in user connects their **GitHub repo** and/or **Supabase project READ-O
 - **Revocable.** `POST /disconnect { provider }` deletes the encrypted credential + metadata; future deep scans for that source fail with a clear "not connected" error.
 - **Owned & isolated.** Deep scans/findings inherit Slice-4 per-user isolation; a user can only scan their own connected resources.
 
-**Endpoints (auth required):** `POST /connectGitHub`, `POST /connectSupabase`, `POST /disconnect { provider }`, `POST /createDeepScan { github?, supabase?, url? }`. A deep scan can also include a URL, producing one unified grade over the whole app.
+**Endpoints (auth required):** `POST /connectGitHub`, `POST /connectSupabase`, `POST /connect/begin { provider }` + `GET /connect/{github,supabase}/callback` (OAuth), `POST /disconnect { provider }`, `POST /createDeepScan { github?, supabase?, url? }`. A deep scan can also include a URL, producing one unified grade over the whole app.
 
 ### Encryption approach
 
@@ -22,6 +22,19 @@ A signed-in user connects their **GitHub repo** and/or **Supabase project READ-O
 ### MOCK mode (local/testing)
 
 Under the emulator (or `MOCK_CONNECTIONS=1`), the connect flows point at a **local fixture** instead of the real GitHub/Supabase APIs: `connectGitHub { repoPath }` and `connectSupabase { policiesPath }`. The worker copies the fixture into the ephemeral workspace exactly as a real clone would, so the full flow (fetch → scan → cleanup) is exercised without any real credentials. The gate uses the QuickCart repo fixture + a broken-RLS Supabase fixture.
+
+### Supabase connect via OAuth (Slice 5b)
+
+Real Supabase connections use the **Supabase Management API OAuth2 + PKCE** flow (client ID + secret in env / Secret Manager — the secret is **server-side only**, never sent to the client, never committed):
+
+1. **begin** — `POST /connect/begin { provider: "supabase" }` (auth required) mints a single-use CSRF `state` **and a PKCE verifier** bound to the caller's uid (stored in `oauthStates/{state}`, denied to all clients) and returns the Supabase **authorize URL** (`https://api.supabase.com/v1/oauth/authorize?...&code_challenge=<S256>`). The browser is redirected there to **log in and approve** — a real Supabase consent screen.
+2. **callback** — `GET /connect/supabase/callback?code&state` verifies the state (single-use, uid-bound, 10-min TTL), exchanges the code for tokens **server-side** (HTTP Basic `client_id:client_secret` + PKCE `code_verifier` → `POST /v1/oauth/token`), and stores the **access + refresh tokens AES-256-GCM-encrypted** in `secrets/{uid}` (client-denied). Only non-secret metadata (`projectRef`, `projectName`, `org`, `mode:'oauth'`) lands client-readable under `users/{uid}.connections.supabase`.
+3. **scan** — at deep-scan time the worker decrypts the token, **refreshes it server-side if expired** (persisting the new token; a failed refresh flags `needsReconnect` and ends that scan cleanly, never crashing the worker), reads the project's schema + RLS policies **read-only** via the Management API, and feeds them to the engine's existing RLS analyzer. An optional **read-only anon-read probe** actively confirms which tables the anon role can read. Schema/policies live only in the ephemeral workspace and are discarded in `finally`.
+4. **refresh / revoke** — expired tokens renew via the refresh token; `POST /disconnect { provider: "supabase" }` deletes the encrypted token + metadata (Supabase exposes no token-revocation endpoint, so deleting our only copy is the revoke; the user can also revoke the app in their Supabase dashboard), so a later Supabase scan fails with a clear "not connected — reconnect Supabase".
+
+**Read-only, least-privilege:** Supabase OAuth2 **scopes are configured on the OAuth app** (the `scope` query param is deprecated — set your app to read-only in the Supabase dashboard). We additionally **self-restrict to read-only Management API calls**, never a write/admin endpoint. Env vars: `SUPABASE_OAUTH_CLIENT_ID`, `SUPABASE_OAUTH_CLIENT_SECRET`, `OAUTH_CALLBACK_BASE` (see `.env.example`).
+
+**Running it for real (locally):** `npm run dev:all` sets `MOCK_CONNECTIONS=0`, so clicking **Connect Supabase** in the dev UI redirects to the real Supabase login. Because Supabase must reach your callback, `OAUTH_CALLBACK_BASE` points at a public tunnel (e.g. ngrok) and you must register **`<OAUTH_CALLBACK_BASE>/connect/supabase/callback`** as an authorized redirect URL in your Supabase OAuth app. Open the dev UI *through* that tunnel URL so the post-consent redirect lands back on it. `MOCK_CONNECTIONS` controls the seam: unset → mock under the emulator (so `npm test` / `npm run gate:supabase` run credential-free against the broken-RLS fixture); `=0` → real OAuth even while Firestore is emulated; `=1` → force mock.
 
 ## Auth & accounts (Slice 4)
 
@@ -125,13 +138,14 @@ FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 npm run worker
 ## Tests & gate
 
 ```bash
-npm test          # vitest integration suite against the emulator (auto-starts it)
-npm run gate      # runs the Slice-2 checklist and prints GATE RESULTS (A–G)
-npm run typecheck # tsc --noEmit
-npm run build     # tsc -p tsconfig.build.json → dist/
+npm test              # vitest integration suite against the emulator (auto-starts it)
+npm run gate          # Slice-5 connected-deep-scan gate, prints GATE RESULTS (A–I)
+npm run gate:supabase # Slice-5b Supabase OAuth connector gate, prints GATE RESULTS (A–J)
+npm run typecheck     # tsc --noEmit
+npm run build         # tsc -p tsconfig.build.json → dist/
 ```
 
-Both `npm test` and `npm run gate` wrap the command in `firebase emulators:exec --only firestore`, which starts the emulator, sets `FIRESTORE_EMULATOR_HOST` for the child, and tears down afterwards.
+`npm test`, `npm run gate`, and `npm run gate:supabase` each wrap the command in `firebase emulators:exec --only firestore,auth`, which starts the emulator, sets `FIRESTORE_EMULATOR_HOST`/`FIREBASE_AUTH_EMULATOR_HOST` for the child, and tears down afterwards.
 
 ## The worker image
 
@@ -164,7 +178,7 @@ See `.env.example`. Key vars: `QUEUE_IMPL` (`memory` | `cloudtasks`), `GCLOUD_PR
 
 - **`ENCRYPTION_KEY`** — set a real high-entropy secret from Secret Manager/KMS (the emulator dev key is insecure). Plan key rotation (re-encrypt `secrets/*`).
 - **GitHub** — create a **GitHub App** (or use fine-grained PATs) requesting **Contents: Read-only + Metadata: Read-only on a single repo**; wire the install/OAuth callback into `connectGitHub` (replace MOCK mode). No `repo` (write) or org scopes.
-- **Supabase** — provision a **read-only DB role** (or read-only connection string / schema+policies read); wire into `connectSupabase`.
+- **Supabase** — register a **Supabase Management API OAuth app**, set `SUPABASE_OAUTH_CLIENT_ID` / `SUPABASE_OAUTH_CLIENT_SECRET` (secret server-side only) and `OAUTH_CALLBACK_BASE`; the `/connect/begin` → `/connect/supabase/callback` flow reads schema + RLS policies **read-only** via the Management API. Requested scopes: `projects:read database:read secrets:read` — no write/admin, ever. (MOCK mode wires into `connectSupabase { policiesPath }` for credential-free local runs.)
 - **Queue/worker** — set `QUEUE_IMPL=cloudtasks`, `WORKER_URL`, the Cloud Tasks queue, and deploy the worker image (Cloud Run). Ensure the worker's tmp dir is ephemeral and sized for `DEEP_SCAN_MAX_BYTES`.
 - **`git`** must be on the worker image for real GitHub clones (the base image has it; mock mode doesn't need it).
 

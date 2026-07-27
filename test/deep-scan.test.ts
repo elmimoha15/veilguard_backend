@@ -50,7 +50,7 @@ async function deepScan(token: string, sources: Record<string, unknown> = { gith
 
 describe('A — connect stores an ENCRYPTED, client-unreadable credential', () => {
   it('secret encrypted server-side; client denied; metadata says connected', async () => {
-    const a = await authedClient(email(), 'password123');
+    const a = await authedClient(email(), 'password123', 'guard');
     const r = await connectGh(a.token);
     expect(r.status).toBe(200);
 
@@ -75,7 +75,7 @@ describe('A — connect stores an ENCRYPTED, client-unreadable credential', () =
 
 describe('B — deep scan finds white-box criticals (QuickCart)', () => {
   it('grade F with hardcoded secret, SQLi, unverified webhook, broken RLS', async () => {
-    const a = await authedClient(email(), 'password123');
+    const a = await authedClient(email(), 'password123', 'guard');
     await connectGh(a.token);
     const r = await deepScan(a.token, { github: true });
     expect(r.status).toBe(202);
@@ -97,7 +97,7 @@ describe('B — deep scan finds white-box criticals (QuickCart)', () => {
 
 describe('C — source is NEVER persisted (success + error path)', () => {
   it('workspace deleted after a successful scan; only redacted findings stored', async () => {
-    const a = await authedClient(email(), 'password123');
+    const a = await authedClient(email(), 'password123', 'guard');
     await connectGh(a.token);
     const r = await deepScan(a.token, { github: true });
     const scanId = r.body.scanId;
@@ -110,7 +110,7 @@ describe('C — source is NEVER persisted (success + error path)', () => {
   });
 
   it('workspace deleted even when the scan errors mid-run (finally cleanup)', async () => {
-    const a = await authedClient(email(), 'password123');
+    const a = await authedClient(email(), 'password123', 'guard');
     // Craft a broken connection whose repo path no longer exists → build throws.
     await setConnection(a.uid, 'github', { repo: 'ghost/repo', scopes: ['contents:read'], writeAccess: false, mock: true }, encryptJson({ mock: true, repoPath: '/definitely/not/here' }));
     const scanId = await createDeepScanDoc(a.uid, { github: true });
@@ -124,8 +124,8 @@ describe('C — source is NEVER persisted (success + error path)', () => {
 
 describe('D — isolation holds for connections + deep scans', () => {
   it('B cannot read A’s secrets/connections/deep-scan/findings, nor scan A’s connection', async () => {
-    const a = await authedClient(email(), 'password123');
-    const b = await authedClient(email(), 'password123');
+    const a = await authedClient(email(), 'password123', 'guard');
+    const b = await authedClient(email(), 'password123', 'guard');
     await connectGh(a.token);
     const scanId = (await deepScan(a.token)).body.scanId;
     const fid = (await getDocs(collection(a.db, 'scans', scanId, 'findings'))).docs[0]?.id;
@@ -143,7 +143,7 @@ describe('D — isolation holds for connections + deep scans', () => {
 
 describe('E — revoke deletes the credential', () => {
   it('disconnect removes the encrypted secret; later deep scan fails "not connected"', async () => {
-    const a = await authedClient(email(), 'password123');
+    const a = await authedClient(email(), 'password123', 'guard');
     await connectGh(a.token);
     expect(await getEncryptedSecret(a.uid, 'github')).not.toBeNull();
 
@@ -159,7 +159,7 @@ describe('E — revoke deletes the credential', () => {
 
 describe('F — deep-scan fixes stay locked (free plan)', () => {
   it('owner cannot read private/fix of a deep finding', async () => {
-    const a = await authedClient(email(), 'password123');
+    const a = await authedClient(email(), 'password123', 'guard');
     await connectGh(a.token);
     const scanId = (await deepScan(a.token)).body.scanId;
     const fid = (await getDocs(collection(a.db, 'scans', scanId, 'findings'))).docs[0]!.id;
@@ -174,7 +174,7 @@ describe('F — deep-scan fixes stay locked (free plan)', () => {
 
 describe('G — read-only, least-privilege', () => {
   it('connect requests only read scopes, single repo, no write access', async () => {
-    const a = await authedClient(email(), 'password123');
+    const a = await authedClient(email(), 'password123', 'guard');
     const r = await connectGh(a.token);
     expect(r.body.writeAccess).toBe(false);
     expect(r.body.scopes).toEqual(['contents:read', 'metadata:read']);
@@ -186,7 +186,7 @@ describe('G — read-only, least-privilege', () => {
 
 describe('H — resilience (bad/oversized/nonexistent → clean error)', () => {
   it('bad credential → error, workspace cleaned, not stuck running', async () => {
-    const a = await authedClient(email(), 'password123');
+    const a = await authedClient(email(), 'password123', 'guard');
     await setConnection(a.uid, 'github', { repo: 'x/y', scopes: ['contents:read'], writeAccess: false, mock: true }, encryptJson({ mock: true, repoPath: '/no/such/path' }));
     const scanId = await createDeepScanDoc(a.uid, { github: true });
     await runScanJob({ scanId });
@@ -198,7 +198,7 @@ describe('H — resilience (bad/oversized/nonexistent → clean error)', () => {
   });
 
   it('oversized workspace → error (size cap), workspace cleaned', async () => {
-    const a = await authedClient(email(), 'password123');
+    const a = await authedClient(email(), 'password123', 'guard');
     await connectGh(a.token);
     const orig = config.deepScanMaxBytes;
     try {
@@ -220,7 +220,7 @@ describe('supabase mock connection also feeds RLS rules', () => {
   it('connecting Supabase fixture yields broken-RLS findings', async () => {
     // Sanity that the supabase mock path works too (fixture has broken RLS).
     if (!existsSync(SUPABASE_FIXTURE)) { mkdirSync(SUPABASE_FIXTURE, { recursive: true }); writeFileSync(resolve(SUPABASE_FIXTURE, '0001.sql'), 'create table public.t (id uuid primary key);'); }
-    const a = await authedClient(email(), 'password123');
+    const a = await authedClient(email(), 'password123', 'guard');
     expect((await post('/connectSupabase', { policiesPath: SUPABASE_FIXTURE, projectRef: 'demo' }, a.token)).status).toBe(200);
     const scanId = (await deepScan(a.token, { supabase: true })).body.scanId;
     const ids = new Set((await listFindings(scanId)).map((f) => f.ruleId));

@@ -68,6 +68,21 @@ service cloud.firestore {
       }
     }
 
+    // ---- Slice 7: monitoring — owner-read, server-only write ----
+    // Monitoring events (the diff/alert feed the dashboard renders) and per-app
+    // run state. Written ONLY by the server (worker/scheduler via Admin SDK,
+    // which bypasses rules); a client may read only its OWN docs, never write.
+    match /monitorEvents/{eventId} {
+      allow get: if signedIn() && request.auth.uid == resource.data.uid;
+      allow list: if signedIn() && request.auth.uid == resource.data.uid;
+      allow write: if false;
+    }
+    match /monitorRuns/{runId} {
+      allow get: if signedIn() && request.auth.uid == resource.data.uid;
+      allow list: if signedIn() && request.auth.uid == resource.data.uid;
+      allow write: if false;
+    }
+
     // Everything else denied by default.
   }
 }

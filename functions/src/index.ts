@@ -2,10 +2,20 @@ import express, { type Request, type Response } from 'express';
 import { config } from '../../shared/src/config.js';
 import { makeQueue } from '../../shared/src/queue.js';
 import { ensureUser } from '../../shared/src/firestore.js';
+import { sendWelcome } from '../../shared/src/emails/senders.js';
 import { handleCreateScan } from './createScan.js';
 import { handleClaimScan } from './claimScan.js';
 import { handleCreateDeepScan } from './createDeepScan.js';
+import { handleCreateUploadScan } from './createUploadScan.js';
+import { handleStartCheckout, handleConfirmUpgrade } from './billing.js';
+import { handleFindingFix } from './findingFix.js';
+import { handlePolarWebhook } from './polarWebhook.js';
+import { handleSendVerification, handleSendReset } from './authEmails.js';
 import { handleConnectGitHub, handleConnectSupabase, handleDisconnect } from './connect.js';
+import { handleListGitHubRepos } from './githubRepos.js';
+import { handleConnectBegin, handleGitHubCallback, handleSupabaseCallback, renderOAuthResult } from './oauth.js';
+import { handleRunSchedules } from './runSchedules.js';
+import { handleGitHubWebhook } from './githubWebhook.js';
 import { resolveAuth, requireAuth, AuthError } from './auth.js';
 
 /**
@@ -16,9 +26,32 @@ import { resolveAuth, requireAuth, AuthError } from './auth.js';
  */
 export function createApiApp() {
   const app = express();
-  app.use(express.json({ limit: '64kb' }));
 
   const queue = makeQueue(); // cloudtasks in prod; throws if memory w/o handler
+
+  // GitHub webhook needs the RAW body to verify its HMAC signature, so it's
+  // registered with a raw parser BEFORE express.json() claims the JSON body.
+  app.post('/githubWebhook', express.raw({ type: '*/*', limit: '1mb' }), async (req: Request, res: Response) => {
+    const r = await handleGitHubWebhook(req.body as Buffer, {
+      signature: req.header('x-hub-signature-256'),
+      event: req.header('x-github-event'),
+    }, queue);
+    res.status(r.status).json(r.body);
+  });
+
+  // Upload scan: raw .zip body BEFORE express.json (json parser would reject it).
+  app.post('/createUploadScan', express.raw({ type: ['application/zip', 'application/octet-stream'], limit: config.uploadMaxBytes }), async (req: Request, res: Response) => {
+    const r = await handleCreateUploadScan(req.body as Buffer, req.query.name as string | undefined, queue, req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
+
+  // Polar billing webhook: raw body BEFORE express.json (HMAC needs exact bytes).
+  app.post('/polarWebhook', express.raw({ type: '*/*', limit: '1mb' }), async (req: Request, res: Response) => {
+    const r = await handlePolarWebhook(req.body as Buffer, req.header('webhook-signature') || req.header('x-polar-signature'));
+    res.status(r.status).json(r.body);
+  });
+
+  app.use(express.json({ limit: '64kb' }));
 
   app.post('/createScan', async (req: Request, res: Response) => {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
@@ -36,7 +69,10 @@ export function createApiApp() {
   app.post('/me', async (req: Request, res: Response) => {
     try {
       const auth = await requireAuth(req.headers.authorization);
-      res.json(await ensureUser(auth));
+      const { user, created } = await ensureUser(auth);
+      // First-ever creation → welcome email (fire-and-forget; never blocks /me).
+      if (created && user.email) void sendWelcome(user.email).catch((e) => console.error('[email] welcome failed:', e));
+      res.json(user);
     } catch (e) {
       if (e instanceof AuthError) return void res.status(e.status).json({ error: e.message });
       throw e;
@@ -60,9 +96,57 @@ export function createApiApp() {
     const r = await handleDisconnect(req.body, req.headers.authorization);
     res.status(r.status).json(r.body);
   });
+  app.post('/github/repos', async (req: Request, res: Response) => {
+    const r = await handleListGitHubRepos(req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
   app.post('/createDeepScan', async (req: Request, res: Response) => {
     const r = await handleCreateDeepScan(req.body, queue, req.headers.authorization);
     res.status(r.status).json(r.body);
+  });
+
+  // Billing (fake upgrade today; Polar later) + paid fix content.
+  app.post('/billing/checkout', async (req: Request, res: Response) => {
+    const r = await handleStartCheckout(req.body, req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
+  app.post('/billing/confirm', async (req: Request, res: Response) => {
+    const r = await handleConfirmUpgrade(req.body, req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
+  app.post('/findingFix', async (req: Request, res: Response) => {
+    const r = await handleFindingFix(req.body?.scanId, req.body?.findingId, req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
+
+  // Branded auth emails (verify + reset) via Resend.
+  app.post('/auth/sendVerification', async (req: Request, res: Response) => {
+    const r = await handleSendVerification(req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
+  app.post('/auth/sendReset', async (req: Request, res: Response) => {
+    const r = await handleSendReset(req.body, req.ip || req.socket.remoteAddress || 'unknown');
+    res.status(r.status).json(r.body);
+  });
+
+  // Monitoring cron entry (Cloud Scheduler → header x-veilguard-cron: SECRET).
+  app.post('/runSchedules', async (req: Request, res: Response) => {
+    const r = await handleRunSchedules(queue, req.header('x-veilguard-cron'));
+    res.status(r.status).json(r.body);
+  });
+
+  // Real connections (OAuth): begin flow + provider callbacks.
+  app.post('/connect/begin', async (req: Request, res: Response) => {
+    const r = await handleConnectBegin(req.body, req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
+  app.get('/connect/github/callback', async (req: Request, res: Response) => {
+    const { query } = await handleGitHubCallback(req.query as Record<string, unknown>);
+    res.type('html').send(renderOAuthResult(query));
+  });
+  app.get('/connect/supabase/callback', async (req: Request, res: Response) => {
+    const { query } = await handleSupabaseCallback(req.query as Record<string, unknown>);
+    res.type('html').send(renderOAuthResult(query));
   });
 
   return app;
@@ -71,6 +155,7 @@ export function createApiApp() {
 const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
   const app = createApiApp();
-  const port = Number(process.env.API_PORT) || 8080;
-  app.listen(port, () => console.log(`[api] createScan on :${port} (queue=${config.queueImpl})`));
+  // Cloud Run injects PORT; honor it (fall back to API_PORT, then 8080).
+  const port = Number(process.env.PORT || process.env.API_PORT) || 8080;
+  app.listen(port, () => console.log(`[api] listening on :${port} (queue=${config.queueImpl})`));
 }

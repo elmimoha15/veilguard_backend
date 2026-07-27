@@ -1,10 +1,15 @@
 import { existsSync, statSync } from 'node:fs';
 import { config } from '../../shared/src/config.js';
-import { encryptJson } from '../../shared/src/crypto.js';
-import { setConnection, deleteConnection } from '../../shared/src/firestore.js';
+import { encryptJson, decryptJson } from '../../shared/src/crypto.js';
+import { setConnection, deleteConnection, getEncryptedSecret } from '../../shared/src/firestore.js';
+import { revokeToken } from '../../shared/src/supabase-api.js';
 import type { GitHubSecret, SupabaseSecret, Provider } from '../../shared/src/types.js';
 import { requireAuth, AuthError } from './auth.js';
+import { requirePaid } from './plan-gate.js';
 import type { HttpResult } from './createScan.js';
+
+/** Connections feed deep/white-box scans, so connecting is a paid feature. */
+const PAID_CONNECT_ERROR = { status: 402 as const, body: { error: 'Connecting a repo/database is a Pro feature — upgrade to connect.' } };
 
 /**
  * The MINIMUM read-only permissions we request. This is both a security control
@@ -33,6 +38,7 @@ function repoName(p: string): string {
 /** POST /connectGitHub — read-only, single-repo. MOCK mode points at a fixture. */
 export async function handleConnectGitHub(rawBody: unknown, authHeader: string | undefined): Promise<HttpResult> {
   const r = await withAuth(authHeader, async (uid) => {
+    if (!(await requirePaid(uid))) return PAID_CONNECT_ERROR;
     const body = (rawBody ?? {}) as { repoPath?: string; repo?: string; token?: string };
 
     if (config.mockConnections) {
@@ -46,49 +52,59 @@ export async function handleConnectGitHub(rawBody: unknown, authHeader: string |
       return { status: 200, body: { connected: 'github', ...meta } };
     }
 
-    // Real mode (not exercised by the gate): store a fine-grained, read-only,
-    // single-repo token. Token exchange / App-install verification goes here.
-    if (!body.token || !body.repo) return { status: 400, body: { error: 'token + repo required' } };
-    const secret: GitHubSecret = { mock: false, token: body.token, repo: body.repo };
-    const meta = { repo: body.repo, scopes: [...GITHUB_READONLY_SCOPES], writeAccess: false as const, mock: false };
-    await setConnection(uid, 'github', meta, encryptJson(secret));
-    return { status: 200, body: { connected: 'github', ...meta } };
+    // Real GitHub connections now go through the GitHub App OAuth flow
+    // (POST /connect/begin → install → GET /connect/github/callback).
+    void body;
+    return { status: 501, body: { error: 'use POST /connect/begin { provider: "github" } for real GitHub connections' } };
   });
   return r as HttpResult;
 }
 
-/** POST /connectSupabase — read-only. MOCK mode points at a policies fixture. */
+/**
+ * POST /connectSupabase — read-only. MOCK mode points at a local policies fixture
+ * (direct, credential-free). Real Supabase connections go through the Management
+ * API OAuth flow (POST /connect/begin { provider: "supabase" } → callback).
+ */
 export async function handleConnectSupabase(rawBody: unknown, authHeader: string | undefined): Promise<HttpResult> {
   const r = await withAuth(authHeader, async (uid) => {
-    const body = (rawBody ?? {}) as { policiesPath?: string; projectRef?: string; connectionString?: string };
+    if (!(await requirePaid(uid))) return PAID_CONNECT_ERROR;
+    const body = (rawBody ?? {}) as { policiesPath?: string; projectRef?: string };
 
     if (config.mockConnections) {
       const policiesPath = body.policiesPath;
       if (!policiesPath || !existsSync(policiesPath)) {
         return { status: 400, body: { error: 'mock connectSupabase requires policiesPath to an existing directory' } };
       }
-      const secret: SupabaseSecret = { mock: true, policiesPath };
-      const meta = { projectRef: body.projectRef || 'mock-project', access: SUPABASE_ACCESS, mock: true };
+      const secret: SupabaseSecret = { mode: 'mock-path', policiesPath };
+      const meta = { projectRef: body.projectRef || 'mock-project', access: SUPABASE_ACCESS, mode: 'mock-path' as const, mock: true };
       await setConnection(uid, 'supabase', meta, encryptJson(secret));
       return { status: 200, body: { connected: 'supabase', ...meta } };
     }
 
-    if (!body.connectionString) return { status: 400, body: { error: 'read-only connectionString required' } };
-    // Guard: refuse a connection string that isn't clearly read-only-intended.
-    const secret: SupabaseSecret = { mock: false, connectionString: body.connectionString };
-    const meta = { projectRef: body.projectRef || 'project', access: SUPABASE_ACCESS, mock: false };
-    await setConnection(uid, 'supabase', meta, encryptJson(secret));
-    return { status: 200, body: { connected: 'supabase', ...meta } };
+    return { status: 501, body: { error: 'use POST /connect/begin { provider: "supabase" } for real Supabase connections' } };
   });
   return r as HttpResult;
 }
 
-/** POST /disconnect { provider } — delete encrypted credential + metadata. */
+/** POST /disconnect { provider } — delete encrypted credential + metadata (and revoke upstream). */
 export async function handleDisconnect(rawBody: unknown, authHeader: string | undefined): Promise<HttpResult> {
   const r = await withAuth(authHeader, async (uid) => {
     const provider = (rawBody as { provider?: string })?.provider as Provider | undefined;
     if (provider !== 'github' && provider !== 'supabase') {
       return { status: 400, body: { error: 'provider must be "github" or "supabase"' } };
+    }
+    // Best-effort upstream revoke for Supabase OAuth tokens BEFORE we delete our
+    // encrypted copy. Never blocks the local delete (which is the source of truth).
+    if (provider === 'supabase') {
+      try {
+        const blob = await getEncryptedSecret(uid, 'supabase');
+        if (blob) {
+          const s = decryptJson<SupabaseSecret>(blob);
+          if (s.mode === 'oauth' && !s.mock) await revokeToken(s.accessToken);
+        }
+      } catch {
+        /* ignore — we still delete the local credential below */
+      }
     }
     await deleteConnection(uid, provider);
     return { status: 200, body: { disconnected: provider } };

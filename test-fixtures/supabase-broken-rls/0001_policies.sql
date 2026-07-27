@@ -24,3 +24,21 @@ create policy "invoices readable by any authed user"
   on public.invoices
   for select
   using (auth.uid() is not null);
+
+create table public.orders (
+  id uuid primary key,
+  user_id uuid,
+  total numeric
+);
+
+alter table public.orders enable row level security;
+
+-- BROKEN: `using (true)` disables all row filtering — every row is world-readable.
+create policy "orders open to all"
+  on public.orders
+  for select
+  using (true);
+
+-- BROKEN: a view defaults to SECURITY DEFINER, so it can leak rows RLS would hide.
+create view public.customer_emails as
+  select email, card_last4 from public.customers;

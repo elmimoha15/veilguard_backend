@@ -29,6 +29,7 @@ const ready = (async () => {
       $('who').textContent = user.email || user.uid;
       $('plan').textContent = me?.plan || 'free';
       refreshMyScans(user.uid);
+      refreshConnections();
     }
   });
 })();
@@ -118,29 +119,74 @@ async function runScan() {
 
 $('scan').addEventListener('click', runScan);
 
-/* ---- Slice 5: connections + deep scan (mock) ---- */
+/* ---- Slice 5: connections + deep scan ---- */
 // In mock mode the server points at local fixtures; the paths below are
 // resolved server-side. For the dev harness we just pass hints.
-$('connectGh').onclick = async () => {
-  const r = await api('/connectGitHub', { repoPath: '../veilguard-scanner/test-fixtures/vulnerable/quickcart' });
-  $('connstatus').textContent = r ? `GitHub connected: ${r.repo} (scopes: ${(r.scopes || []).join(', ')}, write=${r.writeAccess})` : 'connect failed';
-};
-$('connectSb').onclick = async () => {
-  const r = await api('/connectSupabase', { policiesPath: 'test-fixtures/supabase-broken-rls', projectRef: 'demo' });
-  $('connstatus').textContent = r ? `Supabase connected: ${r.projectRef} (${r.access})` : 'connect failed';
-};
+
+// Show current connections (project/org name from client-readable metadata).
+async function refreshConnections() {
+  const me = await api('/me', {});
+  const c = (me && me.connections) || {};
+  const parts = [];
+  if (c.github) parts.push(`GitHub → ${c.github.repo} (write=${c.github.writeAccess})`);
+  if (c.supabase) {
+    const s = c.supabase;
+    parts.push(`Supabase → ${s.projectName || s.projectRef} [${s.mode || '?'}]` +
+      (s.needsReconnect ? ' ⚠ needs reconnect' : '') + ` (${s.access}, scopes: ${(s.scopes || []).join(' ')})`);
+  }
+  $('connections').innerHTML = parts.length ? '<strong>Connections:</strong> ' + parts.join(' · ') : '<em>no connections yet</em>';
+}
+
+// Real OAuth: begin → send the browser to the provider to log in + approve. The
+// provider redirects back to /connect/<provider>/callback (which exchanges the
+// code server-side) → back here with ?connected / ?error. When the server is in
+// MOCK mode (tests only), there's no real provider, so we complete locally.
+async function connectProvider(provider, label) {
+  const r = await api('/connect/begin', { provider });
+  if (!r?.redirectUrl) { $('connstatus').textContent = `${label} connect failed (configured on the server?)`; return; }
+  if (r.mock) {
+    const state = new URL(r.redirectUrl).searchParams.get('state');
+    await fetch(`/connect/${provider}/callback?code=devmock&state=${encodeURIComponent(state)}`).catch(() => {});
+    $('connstatus').textContent = `${label} connected (mock)`;
+    refreshConnections();
+  } else {
+    $('connstatus').textContent = `Redirecting to ${label} to authorize…`;
+    window.location.href = r.redirectUrl; // real login/consent screen
+  }
+}
+$('connectGh').onclick = () => connectProvider('github', 'GitHub');
+$('connectSb').onclick = () => connectProvider('supabase', 'Supabase');
 $('disconnectGh').onclick = async () => {
   await api('/disconnect', { provider: 'github' });
   $('connstatus').textContent = 'GitHub disconnected';
+  refreshConnections();
 };
-$('deep').onclick = async () => {
+$('disconnectSb').onclick = async () => {
+  await api('/disconnect', { provider: 'supabase' });
+  $('connstatus').textContent = 'Supabase disconnected';
+  refreshConnections();
+};
+async function runDeep(sources, label) {
   reset();
-  $('status').textContent = 'creating deep scan…';
-  const body = await api('/createDeepScan', { github: true });
-  if (!body?.scanId) { $('status').textContent = 'deep scan failed (connect GitHub first?)'; return; }
+  $('status').textContent = `creating ${label} deep scan…`;
+  const body = await api('/createDeepScan', sources);
+  if (!body?.scanId) { $('status').textContent = `deep scan failed (connect ${label} first?)`; return; }
   lastScanId = body.scanId;
   subscribe(body.scanId);
-};
+}
+$('deep').onclick = () => runDeep({ github: true }, 'GitHub');
+$('deepSb').onclick = () => runDeep({ supabase: true }, 'Supabase');
+
+// Landing back from an OAuth connect: show the result, then clean the URL.
+const _params = new URLSearchParams(location.search);
+if (_params.get('connected') || _params.get('error')) {
+  ready.then(() => {
+    $('connstatus').textContent = _params.get('connected')
+      ? `${_params.get('connected')} connected ✓`
+      : `connect error: ${_params.get('error')}`;
+  });
+  history.replaceState({}, '', location.pathname);
+}
 
 const auto = new URLSearchParams(location.search).get('auto');
 if (auto) { $('url').value = auto; runScan(); }

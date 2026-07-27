@@ -9,6 +9,8 @@ import {
   getAuth, connectAuthEmulator, createUserWithEmailAndPassword, signInWithEmailAndPassword,
   type Auth,
 } from 'firebase/auth';
+import { ensureUser, setPlan } from '../shared/src/firestore.js';
+import type { Plan } from '../shared/src/types.js';
 
 let counter = 0;
 
@@ -47,7 +49,7 @@ export function clientDb(): ClientHandle {
  * Authenticated client: signs the user up (or in), so Firestore requests carry
  * request.auth.uid and the ID token is available for backend calls.
  */
-export async function authedClient(email: string, password: string): Promise<AuthedClientHandle> {
+export async function authedClient(email: string, password: string, plan?: Plan): Promise<AuthedClientHandle> {
   const app = newApp();
   const auth = getAuth(app);
   const authHost = process.env.FIREBASE_AUTH_EMULATOR_HOST || '127.0.0.1:9099';
@@ -60,6 +62,13 @@ export async function authedClient(email: string, password: string): Promise<Aut
     cred = await signInWithEmailAndPassword(auth, email, password);
   }
   const token = await cred.user.getIdToken();
+  // Optionally provision the user at a given plan (Admin-side) — for tests that
+  // exercise PAID features (connections, deep scan, monitoring). Server-only, as
+  // firestore.rules forbid a client from setting its own plan.
+  if (plan) {
+    await ensureUser({ uid: cred.user.uid, email });
+    if (plan !== 'free') await setPlan(cred.user.uid, plan);
+  }
   const db = connectFs(app);
   return { db, app, auth, uid: cred.user.uid, token, close: () => deleteApp(app) };
 }

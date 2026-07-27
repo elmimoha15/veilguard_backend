@@ -1,6 +1,11 @@
-import { createDeepScanDoc, hasConnection } from '../../shared/src/firestore.js';
+import { createDeepScanDoc, hasConnection, getEncryptedSecret } from '../../shared/src/firestore.js';
+import { decryptJson } from '../../shared/src/crypto.js';
+import { installationHasRepo } from '../../shared/src/github-app.js';
+import { config } from '../../shared/src/config.js';
+import type { GitHubSecret } from '../../shared/src/types.js';
 import type { Queue } from '../../shared/src/queue.js';
 import { requireAuth, AuthError } from './auth.js';
+import { requirePaid } from './plan-gate.js';
 import { rateLimit } from './rate-limit.js';
 import { guardPublicTarget } from './target-guard.js';
 import type { HttpResult } from './createScan.js';
@@ -23,8 +28,20 @@ export async function handleCreateDeepScan(
     throw e;
   }
 
-  const body = (rawBody ?? {}) as { github?: boolean; supabase?: boolean; url?: string };
-  const sources = { github: !!body.github, supabase: !!body.supabase, url: body.url };
+  // PRO-only. Free plan scans URLs (black-box) only; deep/white-box is paid.
+  if (!(await requirePaid(uid))) {
+    return { status: 402, body: { error: 'Deep scan is a Pro feature — upgrade to scan your connected code.' } };
+  }
+
+  const body = (rawBody ?? {}) as { github?: boolean; githubRepo?: string; supabase?: boolean; url?: string };
+  // Choosing a specific repo implies a GitHub source.
+  const wantsGithub = !!body.github || !!body.githubRepo;
+  const sources: { github: boolean; githubRepo?: string; supabase: boolean; url?: string } = {
+    github: wantsGithub,
+    githubRepo: body.githubRepo,
+    supabase: !!body.supabase,
+    url: body.url,
+  };
   if (!sources.github && !sources.supabase && !sources.url) {
     return { status: 400, body: { error: 'select at least one source: github, supabase, or url' } };
   }
@@ -32,6 +49,23 @@ export async function handleCreateDeepScan(
   // Each requested connected source must actually be connected by THIS user.
   if (sources.github && !(await hasConnection(uid, 'github'))) {
     return { status: 409, body: { error: 'GitHub is not connected — connect a repo first' } };
+  }
+  // If a specific repo was chosen, verify it's one the user's installation can
+  // actually access — never let a client scan an arbitrary repo. (Skipped in
+  // mock mode, which has a single fixture repo and no real installation.)
+  if (sources.githubRepo && !config.mockConnections) {
+    const blob = await getEncryptedSecret(uid, 'github');
+    const secret = blob ? decryptJson<GitHubSecret>(blob) : null;
+    if (!secret || secret.mock) {
+      return { status: 409, body: { error: 'GitHub is not connected — connect it in Settings first' } };
+    }
+    try {
+      if (!(await installationHasRepo(secret.installationId, sources.githubRepo))) {
+        return { status: 400, body: { error: 'that repository is not available to your GitHub connection' } };
+      }
+    } catch {
+      return { status: 502, body: { error: 'could not verify the repository with GitHub — try again' } };
+    }
   }
   if (sources.supabase && !(await hasConnection(uid, 'supabase'))) {
     return { status: 409, body: { error: 'Supabase is not connected — connect a project first' } };

@@ -28,7 +28,11 @@ function nowIso(): string {
 }
 
 /** Create a `scans/{id}` doc in status "queued". ownerUid null = anonymous. */
-export async function createScanDoc(target: Target, ownerUid: string | null = null): Promise<string> {
+export async function createScanDoc(
+  target: Target,
+  ownerUid: string | null = null,
+  extra: Partial<Pick<ScanDoc, 'origin' | 'appId'>> = {},
+): Promise<string> {
   const ref = getDb().collection('scans').doc();
   const doc: ScanDoc = {
     id: ref.id,
@@ -37,6 +41,7 @@ export async function createScanDoc(target: Target, ownerUid: string | null = nu
     ownerUid,
     status: 'queued',
     createdAt: nowIso(),
+    ...extra,
   };
   await ref.set(doc);
   return ref.id;
@@ -50,10 +55,18 @@ export async function getScan(id: string): Promise<ScanDoc | null> {
 /** Create a deep (white-box, connected) scan doc owned by uid. */
 export async function createDeepScanDoc(
   uid: string,
-  sources: { github?: boolean; supabase?: boolean; url?: string },
+  sources: { github?: boolean; githubRepo?: string; supabase?: boolean; url?: string },
+  extra: Partial<Pick<ScanDoc, 'origin' | 'appId'>> = {},
 ): Promise<string> {
   const ref = getDb().collection('scans').doc();
-  const label = sources.github ? 'github' : sources.supabase ? 'supabase' : (sources.url ?? 'deep');
+  // Prefer the chosen repo name as the label so each repo is a distinct "site".
+  const label = sources.githubRepo
+    ? sources.githubRepo
+    : sources.github
+      ? 'github'
+      : sources.supabase
+        ? 'supabase'
+        : (sources.url ?? 'deep');
   const doc: ScanDoc = {
     id: ref.id,
     target: { type: 'repo', value: `connected:${label}` },
@@ -62,6 +75,32 @@ export async function createDeepScanDoc(
     ownerUid: uid,
     status: 'queued',
     createdAt: nowIso(),
+    ...extra,
+  };
+  await ref.set(doc);
+  return ref.id;
+}
+
+/**
+ * Create an upload (white-box, Pro-only) scan doc owned by uid. The uploaded
+ * source has already been staged (see StagingStore); the worker extracts it into
+ * an ephemeral workspace and wipes it after the scan — nothing is persisted here.
+ */
+export async function createUploadScanDoc(
+  uid: string,
+  info: { name: string },
+  extra: Partial<Pick<ScanDoc, 'origin' | 'appId'>> = {},
+): Promise<string> {
+  const ref = getDb().collection('scans').doc();
+  const doc: ScanDoc = {
+    id: ref.id,
+    target: { type: 'repo', value: `upload:${info.name}` },
+    type: 'upload',
+    sources: { upload: true },
+    ownerUid: uid,
+    status: 'queued',
+    createdAt: nowIso(),
+    ...extra,
   };
   await ref.set(doc);
   return ref.id;
@@ -150,11 +189,11 @@ export const finishedFields = () => ({ finishedAt: nowIso() });
  * existing doc (so `plan` set later by billing is preserved). Runs server-side
  * (Admin), so the client can never forge the initial plan.
  */
-export async function ensureUser(info: { uid: string; email?: string; name?: string; provider?: string }): Promise<UserDoc> {
+export async function ensureUser(info: { uid: string; email?: string; name?: string; provider?: string }): Promise<{ user: UserDoc; created: boolean }> {
   const ref = userRef(info.uid);
   return getDb().runTransaction(async (tx) => {
     const snap = await tx.get(ref);
-    if (snap.exists) return snap.data() as UserDoc;
+    if (snap.exists) return { user: snap.data() as UserDoc, created: false };
     const doc: UserDoc = {
       uid: info.uid,
       email: info.email,
@@ -164,9 +203,10 @@ export async function ensureUser(info: { uid: string; email?: string; name?: str
       provider: info.provider,
       connections: {},
       alertEmail: info.email,
+      onboarded: false,
     };
     tx.set(ref, doc);
-    return doc;
+    return { user: doc, created: true };
   });
 }
 
@@ -179,6 +219,15 @@ export async function getUser(uid: string): Promise<UserDoc | null> {
 export async function getPlan(uid: string): Promise<UserDoc['plan']> {
   const u = await getUser(uid);
   return u?.plan ?? 'free';
+}
+
+/**
+ * Server-side plan setter (Admin only — firestore.rules forbid clients changing
+ * `plan`). Called by the fake-billing endpoint today and by the real Polar
+ * webhook later; both are the ONLY authorities that can grant a paid plan.
+ */
+export async function setPlan(uid: string, plan: UserDoc['plan']): Promise<void> {
+  await userRef(uid).set({ plan }, { merge: true });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -236,6 +285,16 @@ export async function getEncryptedSecret(uid: string, provider: Provider): Promi
   return typeof v === 'string' ? v : null;
 }
 
+/** Replace just the encrypted credential blob (e.g. after a token refresh). */
+export async function updateEncryptedSecret(uid: string, provider: Provider, encryptedSecret: string): Promise<void> {
+  await secretRef(uid).set({ [provider]: encryptedSecret }, { merge: true });
+}
+
+/** Merge a patch into a provider's client-readable connection metadata. */
+export async function patchConnectionMeta(uid: string, provider: Provider, patch: Record<string, unknown>): Promise<void> {
+  await userRef(uid).set({ connections: { [provider]: patch } }, { merge: true });
+}
+
 export async function getConnectionMeta(uid: string, provider: Provider): Promise<Record<string, unknown> | null> {
   const u = await getUser(uid);
   const conns = (u as unknown as { connections?: Record<string, Record<string, unknown>> })?.connections;
@@ -250,4 +309,24 @@ export async function hasConnection(uid: string, provider: Provider): Promise<bo
 export async function deleteConnection(uid: string, provider: Provider): Promise<void> {
   await secretRef(uid).set({ [provider]: FieldValue.delete() }, { merge: true });
   await userRef(uid).set({ connections: { [provider]: FieldValue.delete() } }, { merge: true });
+}
+
+/* -------------------------------------------------------------------------- */
+/* OAuth state (CSRF) — server-only. Lives in `oauthStates/{state}`, which the  */
+/* default firestore.rules DENY to every client. Maps a short-lived random      */
+/* state → the uid that started the flow, so the callback can't be forged.      */
+/* -------------------------------------------------------------------------- */
+export interface OAuthState { uid: string; provider: string; createdAt: string; codeVerifier?: string }
+
+export async function setOAuthState(state: string, data: OAuthState): Promise<void> {
+  await getDb().collection('oauthStates').doc(state).set(data);
+}
+
+/** Read the state and delete it (single-use). Null if unknown. */
+export async function consumeOAuthState(state: string): Promise<OAuthState | null> {
+  const ref = getDb().collection('oauthStates').doc(state);
+  const snap = await ref.get();
+  if (!snap.exists) return null;
+  await ref.delete();
+  return snap.data() as OAuthState;
 }
