@@ -3,7 +3,7 @@
  * `firebase emulators:exec --only firestore,auth`. Prints GATE RESULTS.
  *   npm run gate
  */
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
 import { execa } from 'execa';
@@ -45,7 +45,7 @@ const denied = async (fn: () => Promise<unknown>) => { try { await fn(); return 
 async function gateA() {
   let a: AuthedClientHandle | undefined;
   try {
-    const A = (a = await authedClient(email(), 'password123'));
+    const A = (a = await authedClient(email(), 'password123', 'guard'));
     await connectGh(A.token);
     const blob = await getEncryptedSecret(A.uid, 'github');
     const enc = !!blob && looksEncrypted(blob) && !blob.includes(QUICKCART_PATH);
@@ -60,7 +60,7 @@ async function gateA() {
 async function gateB() {
   let a: AuthedClientHandle | undefined;
   try {
-    const A = (a = await authedClient(email(), 'password123'));
+    const A = (a = await authedClient(email(), 'password123', 'guard'));
     await connectGh(A.token);
     const scanId = (await deepScan(A.token)).body.scanId;
     const d = await getScan(scanId);
@@ -74,7 +74,7 @@ async function gateB() {
 async function gateC() {
   let a: AuthedClientHandle | undefined;
   try {
-    const A = (a = await authedClient(email(), 'password123'));
+    const A = (a = await authedClient(email(), 'password123', 'guard'));
     await connectGh(A.token);
     const okScan = (await deepScan(A.token)).body.scanId;
     const cleanAfterOk = !existsSync(workspacePath(okScan));
@@ -94,8 +94,8 @@ async function gateC() {
 async function gateD() {
   let a: AuthedClientHandle | undefined, b: AuthedClientHandle | undefined;
   try {
-    const A = (a = await authedClient(email(), 'password123'));
-    const B = (b = await authedClient(email(), 'password123'));
+    const A = (a = await authedClient(email(), 'password123', 'guard'));
+    const B = (b = await authedClient(email(), 'password123', 'guard'));
     await connectGh(A.token);
     const scanId = (await deepScan(A.token)).body.scanId;
     const fid = (await getDocs(collection(A.db, 'scans', scanId, 'findings'))).docs[0]?.id;
@@ -114,7 +114,7 @@ async function gateD() {
 async function gateE() {
   let a: AuthedClientHandle | undefined;
   try {
-    const A = (a = await authedClient(email(), 'password123'));
+    const A = (a = await authedClient(email(), 'password123', 'guard'));
     await connectGh(A.token);
     const before = (await getEncryptedSecret(A.uid, 'github')) !== null;
     const disc = (await post('/disconnect', { provider: 'github' }, A.token)).status;
@@ -129,7 +129,7 @@ async function gateE() {
 async function gateF() {
   let a: AuthedClientHandle | undefined;
   try {
-    const A = (a = await authedClient(email(), 'password123'));
+    const A = (a = await authedClient(email(), 'password123', 'guard'));
     await connectGh(A.token);
     const scanId = (await deepScan(A.token)).body.scanId;
     const fid = (await getDocs(collection(A.db, 'scans', scanId, 'findings'))).docs[0]!.id;
@@ -144,7 +144,7 @@ async function gateF() {
 async function gateG() {
   let a: AuthedClientHandle | undefined;
   try {
-    const A = (a = await authedClient(email(), 'password123'));
+    const A = (a = await authedClient(email(), 'password123', 'guard'));
     const r = await connectGh(A.token);
     const scopes: string[] = r.body.scopes || [];
     const readOnly = r.body.writeAccess === false && scopes.length > 0 && !scopes.some((s) => /write|admin|delete/i.test(s));
@@ -157,7 +157,7 @@ async function gateG() {
 async function gateH() {
   let a: AuthedClientHandle | undefined;
   try {
-    const A = (a = await authedClient(email(), 'password123'));
+    const A = (a = await authedClient(email(), 'password123', 'guard'));
     // bad credential
     await setConnection(A.uid, 'github', { repo: 'x/y', scopes: ['contents:read'], writeAccess: false, mock: true }, encryptJson({ mock: true, repoPath: '/no/such/path' }));
     const bad = await createDeepScanDoc(A.uid, { github: true });
@@ -196,7 +196,7 @@ async function gateI() {
   if (tc.exitCode !== 0 || build.exitCode !== 0) pass = false;
   details.push(`typecheck=${tc.exitCode === 0}`, `build=${build.exitCode === 0}`);
 
-  const secretsOk = !hasSecret(ROOT);
+  const secretsOk = !(await hasCommittedSecret(ROOT));
   if (!secretsOk) pass = false;
   details.push(`no-secrets=${secretsOk}`);
 
@@ -210,14 +210,25 @@ async function gateI() {
 
 const DANGEROUS = /sk_live_[A-Za-z0-9]{6}|sk_test_[A-Za-z0-9]{6}|sb_secret_[A-Za-z0-9]{6}|whsec_[A-Za-z0-9]{6}|BEGIN (RSA )?PRIVATE KEY|AKIA[0-9A-Z]{16}/;
 const SKIP = new Set(['node_modules', 'dist', '.jre', '.git', '.firebase', 'coverage', 'test-fixtures']);
-function hasSecret(dir: string): boolean {
-  for (const e of readdirSync(dir)) {
-    if (SKIP.has(e)) continue;
-    const p = join(dir, e);
-    const st = statSync(p);
-    if (st.isDirectory()) { if (hasSecret(p)) return true; }
-    else if (st.size < 500_000 && /\.(ts|js|json|md|html|env|example|yaml|yml|rules)$|Dockerfile$|\.env/.test(e)) {
-      if (DANGEROUS.test(readFileSync(p, 'utf8'))) { console.error(`  secret-like content in ${p}`); return true; }
+/**
+ * Only files git actually TRACKS can leak — a gitignored local file (e.g. the
+ * dev's own `secrets/*.json` Admin key) is never committed, so it's not a repo
+ * secret. Scan only `git ls-files`, skipping fixtures (which hold fake secrets).
+ */
+async function hasCommittedSecret(root: string): Promise<boolean> {
+  const ls = await execa('git', ['ls-files', '-z'], { cwd: root, reject: false });
+  if (ls.exitCode !== 0) return false;
+  for (const rel of ls.stdout.split('\0').filter(Boolean)) {
+    if (rel.split('/').some((seg) => SKIP.has(seg))) continue;
+    if (!(/\.(ts|js|json|md|html|env|example|yaml|yml|rules)$|Dockerfile$|\.env/.test(rel))) continue;
+    const p = join(root, rel);
+    try {
+      if (statSync(p).size < 500_000 && DANGEROUS.test(readFileSync(p, 'utf8'))) {
+        console.error(`  secret-like content in TRACKED file ${rel}`);
+        return true;
+      }
+    } catch {
+      /* file listed but unreadable/removed — ignore */
     }
   }
   return false;

@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve, sep } from 'node:path';
 import { unzipSync } from 'fflate';
+import ignore from 'ignore';
 import { config } from '../../shared/src/config.js';
 import { makeStaging } from '../../shared/src/staging.js';
 import type { ScanDoc } from '../../shared/src/types.js';
@@ -11,6 +12,8 @@ import { workspacePath, removeWorkspace } from './deepScan.js';
 const IGNORE_DIRS = new Set([
   '.git', 'node_modules', '.next', 'dist', 'build', 'coverage',
   'venv', '.venv', '__pycache__', 'vendor', '.tox', '.mypy_cache', '.pytest_cache', '.gradle',
+  // Test/fixture artifacts — not deployed, so scanning them is false-positive noise.
+  'test-fixtures', 'fixtures', '__tests__', '__mocks__', '.storybook', 'cypress', 'e2e',
 ]);
 // The engine only reads files under this size, so larger entries are never
 // scanned — skip them at extract time (also neutralizes single-giant-file zip bombs).
@@ -25,6 +28,31 @@ function isUnsafePath(name: string): boolean {
 /** True if any path segment is an ignored (never-scanned) directory. */
 function isIgnoredPath(name: string): boolean {
   return name.split(/[\\/]/).some((seg) => IGNORE_DIRS.has(seg));
+}
+
+/**
+ * Load the root-most `.gitignore` from the archive (if any) so we can skip the
+ * exact files git would — an uploaded folder has no git context, so without this
+ * it includes gitignored secrets/.env/local dirs that the deployed repo never
+ * would. Returns the matcher + the directory it's anchored at.
+ */
+function loadGitignore(zip: Buffer): { dir: string; ig: ReturnType<typeof ignore> } | null {
+  let entries: Record<string, Uint8Array> = {};
+  try {
+    entries = unzipSync(zip, { filter: (f) => /(^|\/)\.gitignore$/.test(f.name) && f.originalSize < 200_000 });
+  } catch {
+    return null;
+  }
+  const names = Object.keys(entries);
+  if (!names.length) return null;
+  names.sort((a, b) => a.split('/').length - b.split('/').length || a.length - b.length); // root-most first
+  const name = names[0]!;
+  const dir = name.includes('/') ? name.slice(0, name.lastIndexOf('/') + 1) : '';
+  try {
+    return { dir, ig: ignore().add(Buffer.from(entries[name]!).toString('utf8')) };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -43,10 +71,25 @@ export function safeUnzip(zip: Buffer, root: string): { files: number; bytes: nu
   let total = 0;
   let truncated = false;
 
+  // Skip exactly what the folder's .gitignore would — so an upload matches the
+  // pushed repo (no gitignored secrets/.env/local dirs leaking into the scan).
+  const gi = loadGitignore(zip);
+  const gitignored = (name: string): boolean => {
+    if (!gi || !name.startsWith(gi.dir)) return false;
+    const rel = name.slice(gi.dir.length);
+    if (!rel) return false;
+    try {
+      return gi.ig.ignores(rel);
+    } catch {
+      return false;
+    }
+  };
+
   const entries = unzipSync(zip, {
     filter: (f) => {
       if (f.name.endsWith('/')) return false; // directory marker — dirs created on write
       if (isUnsafePath(f.name) || isIgnoredPath(f.name)) return false;
+      if (gitignored(f.name)) return false; // matches the repo's .gitignore
       if (f.originalSize >= MAX_SCANNED_FILE_BYTES) return false; // never scanned anyway
       if (included >= config.uploadMaxEntries || total + f.originalSize > config.deepScanMaxBytes) {
         truncated = true;
