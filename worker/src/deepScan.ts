@@ -98,7 +98,8 @@ export async function buildDeepWorkspace(scanId: string, uid: string, doc: ScanD
       const repo = doc.sources.githubRepo ?? secret.repo;
       const token = await installationToken(secret.installationId);
       const url = `https://x-access-token:${token}@github.com/${repo}.git`;
-      await execa('git', ['clone', '--depth', '1', url, ws], { timeout: config.scanTimeoutMs });
+      // A large shallow clone can take a while — use the deep-scan budget, not the URL one.
+      await execa('git', ['clone', '--depth', '1', url, ws], { timeout: config.deepScanTimeoutMs });
       // The engine never reads git history — drop .git so it doesn't bloat the
       // workspace (disk + the size cap) or slow the scan.
       rmSync(join(ws, '.git'), { recursive: true, force: true });

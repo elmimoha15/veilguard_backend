@@ -16,8 +16,11 @@ import { recordMonitoringResult } from '../../shared/src/monitor.js';
 import type { ScanJob } from '../../shared/src/types.js';
 
 class ScanTimeoutError extends Error {
+  code = 'E_TIMEOUT';
+  // `E_TIMEOUT` marker lets the client render scan-type-aware copy reliably,
+  // independent of the human wording.
   constructor(ms: number) {
-    super(`scan exceeded ${ms}ms timeout`);
+    super(`E_TIMEOUT: scan exceeded ${Math.round(ms / 1000)}s`);
   }
 }
 
@@ -78,15 +81,16 @@ export async function runScanJob(job: ScanJob): Promise<void> {
       // Record the workspace path BEFORE building it, so the finally block
       // always cleans up even if buildDeepWorkspace throws mid-fetch.
       workspace = workspacePath(scanId);
-      const built = await withTimeout(buildDeepWorkspace(scanId, doc.ownerUid, doc), config.scanTimeoutMs);
-      result = await withTimeout(runDeepEngine(scanId, workspace, doc, built.anonReadable), config.scanTimeoutMs);
+      // Deep/upload scans clone + parse a whole codebase — give them the long budget.
+      const built = await withTimeout(buildDeepWorkspace(scanId, doc.ownerUid, doc), config.deepScanTimeoutMs);
+      result = await withTimeout(runDeepEngine(scanId, workspace, doc, built.anonReadable), config.deepScanTimeoutMs);
     } else if (doc.type === 'upload') {
       if (!doc.ownerUid) throw new Error('upload scan requires an owner');
       // Same ephemeral-workspace contract as deep: set the path first so the
       // finally always wipes the extracted (uploaded) source, then white-box it.
       workspace = workspacePath(scanId);
-      await withTimeout(buildUploadWorkspace(scanId, doc), config.scanTimeoutMs);
-      result = await withTimeout(runDeepEngine(scanId, workspace, doc), config.scanTimeoutMs);
+      await withTimeout(buildUploadWorkspace(scanId, doc), config.deepScanTimeoutMs);
+      result = await withTimeout(runDeepEngine(scanId, workspace, doc), config.deepScanTimeoutMs);
     } else {
       assertTargetUsable(doc.target);
       const ctx = await withTimeout(buildContext(doc.target), config.scanTimeoutMs);

@@ -248,7 +248,10 @@ export async function recordMonitoringResult(scanId: string): Promise<MonitorEve
     const user = await getUser(uid);
     const app = userApps(user).find((a) => a.id === appId);
     const mon: AppMonitoring | undefined = app?.monitoring;
-    const threshold = mon?.severity ?? 'critical';
+    // Default to 'high': a NEW critical OR high finding (a freshly-committed
+    // .env, a new XSS, an exposed key) is exactly what "catches new holes" means.
+    // Only alert on criticals if the user explicitly narrows it.
+    const threshold = mon?.severity ?? 'high';
     const emailOn = mon?.emailAlerts !== false;
 
     const alertable = newFindings.some((f) => meetsThreshold(f.severity, threshold)) || gradeWorse(gradeAfter, gradeBefore);

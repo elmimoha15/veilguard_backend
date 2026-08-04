@@ -19,7 +19,12 @@ export const config = {
 
   // Worker
   port: num('PORT', 8081),
+  // URL (black-box) scans should be quick — a slow public site fails fast.
   scanTimeoutMs: num('SCAN_TIMEOUT_MS', 120_000),
+  // Deep/upload (white-box) scans clone + parse a whole codebase, so they get a
+  // much longer budget. In prod the Cloud Run worker's request timeout must be
+  // >= this value.
+  deepScanTimeoutMs: num('DEEP_SCAN_TIMEOUT_MS', 900_000), // 15 min
 
   // Cloud Tasks (prod)
   cloudTasksLocation: process.env.CLOUD_TASKS_LOCATION || 'us-central1',

@@ -21,7 +21,8 @@
     "build": "tsc -p tsconfig.build.json",
     "deploy:api": "bash scripts/deploy-api.sh",
     "create-scheduler": "bash scripts/create-scheduler.sh",
-    "simulate:push": "FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 GCLOUD_PROJECT=demo-veilguard tsx scripts/simulate-push.ts"
+    "simulate:push": "FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 GCLOUD_PROJECT=demo-veilguard tsx scripts/simulate-push.ts",
+    "simulate:monitor": "GCLOUD_PROJECT=veilguard-d6710 tsx scripts/simulate-monitor.ts"
   },
   "dependencies": {
     "@google-cloud/tasks": "^5.5.0",
