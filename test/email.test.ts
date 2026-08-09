@@ -65,7 +65,7 @@ describe('B — security-alert email', () => {
     expect(m.html && m.html.length).toBeTruthy();
     expect(m.text && m.text.length).toBeTruthy();
     // from = alert sender on the verified subdomain
-    expect(m.from).toContain('alerts@send.veilguard.dev');
+    expect(m.from).toContain('alerts@veilguard.dev');
     expect(m.subject).toMatch(/new security issue/i);
     // brand + severity hexes (must be the real frontend values)
     expect(m.html).toContain('#F3C500'); // brand

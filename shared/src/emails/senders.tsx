@@ -3,7 +3,8 @@ import { render } from '@react-email/render';
 import { getEmailTransport } from '../email.js';
 import { config } from '../config.js';
 import { SecurityAlert, type AlertFinding } from './SecurityAlert.js';
-import { Welcome, VerifyEmail, PasswordReset, Marketing } from './Transactional.js';
+import { Welcome, VerifyEmail, PasswordReset, Marketing, AccountDeleted, GuardActivated, PaymentFailed, SubscriptionCanceled } from './Transactional.js';
+import { MonthlySummary, type SummaryApp } from './MonthlySummary.js';
 
 /** Render a template to BOTH html and plain-text (always send both). */
 export async function renderBoth(el: React.ReactElement): Promise<{ html: string; text: string }> {
@@ -69,6 +70,55 @@ export async function sendPasswordReset(to: string, resetUrl: string): Promise<v
   await getEmailTransport().send({
     to, subject: 'Reset your Veilguard password', html, text,
     from: config.emailFrom, replyTo: config.emailReplyTo, tags: [{ name: 'type', value: 'reset' }],
+  });
+}
+
+export async function sendAccountDeleted(to: string): Promise<void> {
+  const { html, text } = await renderBoth(<AccountDeleted />);
+  await getEmailTransport().send({
+    to, subject: 'Your Veilguard account has been deleted', html, text,
+    from: config.emailFrom, replyTo: config.emailReplyTo, tags: [{ name: 'type', value: 'account-deleted' }],
+  });
+}
+
+export async function sendGuardActivated(to: string): Promise<void> {
+  const { html, text } = await renderBoth(<GuardActivated ctaUrl={`${config.appBaseUrl}/dashboard`} />);
+  await getEmailTransport().send({
+    to, subject: "You're on Veilguard Guard", html, text,
+    from: config.emailFrom, replyTo: config.emailReplyTo, tags: [{ name: 'type', value: 'billing-activated' }],
+  });
+}
+
+export async function sendPaymentFailed(to: string): Promise<void> {
+  const { html, text } = await renderBoth(<PaymentFailed ctaUrl={`${config.appBaseUrl}/billing`} />);
+  await getEmailTransport().send({
+    to, subject: 'Your Veilguard payment failed — action needed', html, text,
+    from: config.emailFrom, replyTo: config.emailReplyTo, tags: [{ name: 'type', value: 'billing-payment-failed' }],
+  });
+}
+
+export async function sendSubscriptionCanceled(to: string, endsOn?: string): Promise<void> {
+  const { html, text } = await renderBoth(<SubscriptionCanceled endsOn={endsOn} ctaUrl={`${config.appBaseUrl}/billing`} />);
+  await getEmailTransport().send({
+    to, subject: 'Your Veilguard Guard plan is set to cancel', html, text,
+    from: config.emailFrom, replyTo: config.emailReplyTo, tags: [{ name: 'type', value: 'billing-canceled' }],
+  });
+}
+
+export async function sendMonthlySummary(args: { to: string; apps: SummaryApp[]; scansUsed: number; scanLimit: number }): Promise<void> {
+  const unsubscribeUrl = manageUrl();
+  const { html, text } = await renderBoth(
+    <MonthlySummary apps={args.apps} scansUsed={args.scansUsed} scanLimit={args.scanLimit} ctaUrl={`${config.appBaseUrl}/dashboard`} unsubscribeUrl={unsubscribeUrl} />,
+  );
+  await getEmailTransport().send({
+    to: args.to,
+    subject: 'Your monthly Veilguard security summary',
+    html,
+    text,
+    from: config.emailFrom,
+    replyTo: config.emailReplyTo,
+    listUnsubscribe: unsubscribeUrl,
+    tags: [{ name: 'type', value: 'summary' }],
   });
 }
 

@@ -1,7 +1,8 @@
-import { createUploadScanDoc } from '../../shared/src/firestore.js';
+import { createUploadScanDoc, getPlan } from '../../shared/src/firestore.js';
 import { makeStaging } from '../../shared/src/staging.js';
 import { config } from '../../shared/src/config.js';
 import type { Queue } from '../../shared/src/queue.js';
+import { canScan, scanLimit } from '../../shared/src/usage.js';
 import { requireAuth, AuthError } from './auth.js';
 import { requirePaid } from './plan-gate.js';
 import { rateLimit } from './rate-limit.js';
@@ -61,7 +62,15 @@ export async function handleCreateUploadScan(
   const rl = rateLimit(`upload|${uid}`);
   if (!rl.allowed) return { status: 429, body: { error: 'rate limited', retryAfterMs: rl.retryAfterMs } };
 
-  const scanId = await createUploadScanDoc(uid, { name: safeName(name) });
+  // Monthly scan cap (Guard = 30) — shared across every scan type. Apps unlimited.
+  const name0 = safeName(name);
+  const plan = await getPlan(uid);
+  if (!(await canScan(uid, plan))) {
+    const n = scanLimit(plan);
+    return { status: 429, body: { error: `Monthly scan limit reached (${n}/${n}). It resets next cycle — reach out if you need a higher limit.`, code: 'E_SCAN_LIMIT' } };
+  }
+
+  const scanId = await createUploadScanDoc(uid, { name: name0 });
   try {
     await makeStaging().put(scanId, rawZip);
   } catch {

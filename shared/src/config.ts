@@ -32,9 +32,14 @@ export const config = {
   workerUrl: process.env.WORKER_URL || '',
   workerInvokerSa: process.env.WORKER_INVOKER_SA || '',
 
-  // createScan rate limit
+  // createScan rate limit — per (IP,target) pair.
   rateLimitWindowMs: num('RATE_LIMIT_WINDOW_MS', 60_000),
   rateLimitMax: num('RATE_LIMIT_MAX', 5),
+  // Abuse #1: a second, broader cap on the free URL scan keyed on IP ALONE, so
+  // one IP can't spray unlimited *distinct* targets (5 each). In-memory/per-
+  // process like the base limiter — a distributed limiter is future work.
+  freeScanIpWindowMs: num('FREE_SCAN_IP_WINDOW_MS', 60_000),
+  freeScanIpMax: num('FREE_SCAN_IP_MAX', 20),
 
   // Local-dev / test seam: allow localhost & private-IP scan targets on the
   // public path. Default false (secure). Never enable in production.
@@ -95,36 +100,37 @@ export const config = {
   // --- Email alerts (Slice 7) --- when RESEND_API_KEY is set, real alert emails
   // are sent via Resend; otherwise the console transport is used (tests/dev).
   get resendApiKey(): string { return process.env.RESEND_API_KEY || ''; },
-  // From addresses live on the verified sending subdomain (send.veilguard.dev).
-  get alertFromEmail(): string { return process.env.ALERT_FROM_EMAIL || 'Veilguard <alerts@send.veilguard.dev>'; },
-  get emailFrom(): string { return process.env.EMAIL_FROM || 'Veilguard <hello@send.veilguard.dev>'; },
-  get marketingFromEmail(): string { return process.env.EMAIL_MARKETING_FROM || 'Veilguard <news@send.veilguard.dev>'; },
+  // From addresses live on the verified sending domain (veilguard.dev). NOTE:
+  // Resend only accepts a From: on the VERIFIED domain itself — the `send.`
+  // label in the DNS records is just the SPF return-path, not a sending domain.
+  get alertFromEmail(): string { return process.env.ALERT_FROM_EMAIL || 'Veilguard <alerts@veilguard.dev>'; },
+  get emailFrom(): string { return process.env.EMAIL_FROM || 'Veilguard <hello@veilguard.dev>'; },
+  get marketingFromEmail(): string { return process.env.EMAIL_MARKETING_FROM || 'Veilguard <news@veilguard.dev>'; },
   get emailReplyTo(): string { return process.env.EMAIL_REPLY_TO || 'support@veilguard.dev'; },
   // Base URL the app is served from — used in email links + Admin action-code URLs.
   get appBaseUrl(): string { return process.env.APP_BASE_URL || this.frontendUrl || 'https://veilguard.dev'; },
 
-  // DEV-ONLY fake-paid preview. When on (AND on the emulator), a dev endpoint
-  // returns fix/fixPrompt so the frontend can preview the unlocked UI before
-  // real billing. NEVER enable in production — the real paywall is unchanged.
-  get devFakePaid(): boolean {
-    return (process.env.DEV_FAKE_PAID === '1' || process.env.DEV_FAKE_PAID === 'true') && this.usingEmulator;
-  },
-
-  // --- Billing (Slice 6) ---
-  // FAKE billing: lets a signed-in user set their own plan via POST /billing/confirm
-  // WITHOUT payment, so free↔paid can be tested end-to-end. NOT emulator-gated (so it
-  // works on the real dev project). MUST stay unset in production — the real
-  // plan-setter there is the Polar webhook.
-  get fakeBilling(): boolean {
-    return process.env.FAKE_BILLING === '1' || process.env.FAKE_BILLING === 'true';
-  },
-  // Polar webhook secret (verifies the signature on POST /polarWebhook). Empty →
+  // --- Billing (Slice 6, Polar) — real payment gating. No fake/dev paths. ---
+  // Polar webhook secret (standard-webhooks; verifies POST /polarWebhook). Empty →
   // the webhook is inert (returns ignored). Emulator dev-fallback for local tests.
   get polarWebhookSecret(): string {
     return process.env.POLAR_WEBHOOK_SECRET || (this.usingEmulator ? 'dev-emulator-polar-secret' : '');
   },
   get polarAccessToken(): string { return process.env.POLAR_ACCESS_TOKEN || ''; },
   get polarConfigured(): boolean { return !!this.polarAccessToken && !!this.polarWebhookSecret; },
+  // 'sandbox' for testing, 'production' when live. Defaults to sandbox off-prod.
+  get polarServer(): 'sandbox' | 'production' {
+    return process.env.POLAR_SERVER === 'production' ? 'production' : 'sandbox';
+  },
+  // Per-request timeout for Polar API calls. Bounded so a network hiccup /
+  // unreachable Polar fails fast instead of hanging (the SDK otherwise retries
+  // connection errors with backoff for a long time).
+  get polarTimeoutMs(): number { return num('POLAR_TIMEOUT_MS', 8000); },
+  // Polar product IDs → plan mapping. Guard (recurring). Annual optional.
+  get guardProductId(): string { return process.env.GUARD_MONTHLY || ''; },
+  get guardAnnualProductId(): string { return process.env.GUARD_ANNUAL || ''; },
+  /** All product IDs that map to the Guard plan (monthly + optional annual). */
+  get guardProductIds(): string[] { return [this.guardProductId, this.guardAnnualProductId].filter(Boolean); },
 
   // --- Real connections (OAuth) --- read lazily so a .env loaded at startup is
   // picked up. A provider is "configured" only when its real credentials exist;
@@ -153,4 +159,24 @@ export const config = {
   get mockSupabasePoliciesPath(): string {
     return process.env.MOCK_SUPABASE_POLICIES_PATH || 'test-fixtures/supabase-broken-rls';
   },
+
+  // --- Slice 8: per-plan caps (server-enforced) + Claude-tailored fixes ---
+  // Caps are one place so a future higher/UNLIMITED tier is a one-line change.
+  // A single monthly SCAN quota per plan — every scan type (URL, deep, upload,
+  // monitoring re-scan) draws from it. Apps are unlimited. Getters so a test /
+  // deploy env can tune them without a rebuild.
+  get freeMaxScansPerMonth(): number { return num('FREE_MAX_SCANS_PER_MONTH', 2); },
+  get guardMaxScansPerMonth(): number { return num('GUARD_MAX_SCANS_PER_MONTH', 30); },
+  // AI-fix cost guard: at most N findings per scan get a Claude fix (the rest use
+  // the engine's canned fix), and at most M Claude calls per user per month.
+  get aiFixMaxPerScan(): number { return num('AI_FIX_MAX_PER_SCAN', 8); },
+  get aiFixMaxPerMonth(): number { return num('AI_FIX_MAX_PER_MONTH', 200); },
+  // Anthropic API — server-only. Unset → AI fixes are skipped entirely (canned
+  // fixes ship), so no key means no behavior change and no network in tests.
+  get anthropicApiKey(): string { return process.env.ANTHROPIC_API_KEY || ''; },
+  get aiFixEnabled(): boolean { return !!this.anthropicApiKey; },
+  // Cheap/fast default; escalate to a stronger model only when the cheap one's
+  // output fails validation (see claude-fix.ts).
+  aiFixModel: process.env.AI_FIX_MODEL || 'claude-haiku-4-5',
+  aiFixEscalateModel: process.env.AI_FIX_ESCALATE_MODEL || 'claude-sonnet-5',
 } as const;

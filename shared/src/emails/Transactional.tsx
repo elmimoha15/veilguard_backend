@@ -48,6 +48,75 @@ export function PasswordReset({ resetUrl }: { resetUrl: string }) {
   );
 }
 
+/** Account-deleted confirmation — sent after a user permanently deletes their account. */
+export function AccountDeleted() {
+  return (
+    <Layout preview="Your Veilguard account has been deleted">
+      <Heading>Your account has been deleted</Heading>
+      <Paragraph>
+        Your Veilguard account and everything in it — your scans, findings, connections and monitoring —
+        have been permanently deleted. Any active plan has been cancelled and you won't be charged again.
+      </Paragraph>
+      <Paragraph muted>
+        If you didn't request this, contact us right away — this action can't be undone from your side, but
+        we can help. Otherwise, thanks for trying Veilguard; you're always welcome back.
+      </Paragraph>
+    </Layout>
+  );
+}
+
+/** Guard activated — sent when a subscription becomes active. */
+export function GuardActivated({ ctaUrl }: { ctaUrl: string }) {
+  return (
+    <Layout preview="You're on Veilguard Guard — everything's unlocked">
+      <Heading>You're on Guard 🛡️</Heading>
+      <Paragraph>
+        Your subscription is active. Every fix is unlocked (copy-paste code + AI prompts), and you can now
+        run GitHub repo scans, upload folders, and turn on continuous monitoring so we re-check your app
+        and alert you the moment a new hole appears.
+      </Paragraph>
+      <Section style={{ padding: '8px 0 4px' }}>
+        <Btn href={ctaUrl}>Open your dashboard</Btn>
+      </Section>
+      <Paragraph muted>Manage or cancel anytime from Settings → Billing. Thanks for supporting Veilguard.</Paragraph>
+    </Layout>
+  );
+}
+
+/** Payment failed (dunning) — sent when a subscription goes past_due. */
+export function PaymentFailed({ ctaUrl }: { ctaUrl: string }) {
+  return (
+    <Layout preview="Your Veilguard payment didn't go through">
+      <Heading>Your payment didn't go through</Heading>
+      <Paragraph>
+        We couldn't charge your card for Veilguard Guard. Don't worry — your access is still on for now
+        while we retry. Please update your payment method to avoid losing your fixes and monitoring.
+      </Paragraph>
+      <Section style={{ padding: '8px 0 4px' }}>
+        <Btn href={ctaUrl}>Update payment method</Btn>
+      </Section>
+      <Paragraph muted>If the card keeps failing, your plan will drop back to Free and monitoring will pause.</Paragraph>
+    </Layout>
+  );
+}
+
+/** Subscription canceled — confirms access continues until the period end. */
+export function SubscriptionCanceled({ endsOn, ctaUrl }: { endsOn?: string; ctaUrl: string }) {
+  return (
+    <Layout preview="Your Veilguard Guard plan is set to cancel">
+      <Heading>Your plan is set to cancel</Heading>
+      <Paragraph>
+        We've scheduled your Veilguard Guard subscription to cancel{endsOn ? ` on ${endsOn}` : ' at the end of your billing period'}.
+        You keep full access — all fixes and monitoring — until then. After that your account returns to Free.
+      </Paragraph>
+      <Section style={{ padding: '8px 0 4px' }}>
+        <Btn href={ctaUrl}>Changed your mind? Resume Guard</Btn>
+      </Section>
+      <Paragraph muted>No further charges. Thanks for giving Veilguard a try.</Paragraph>
+    </Layout>
+  );
+}
+
 /** Marketing / newsletter — generic branded template with a prominent unsubscribe. */
 export function Marketing({ heading, body, ctaText, ctaUrl, unsubscribeUrl }: { heading: string; body: string; ctaText?: string; ctaUrl?: string; unsubscribeUrl: string }) {
   return (

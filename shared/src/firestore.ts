@@ -2,6 +2,7 @@ import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore, FieldValue, type Firestore } from 'firebase-admin/firestore';
 import { findingId as engineFindingId } from 'veilguard-scanner';
 import { config } from './config.js';
+import { makeStaging } from './staging.js';
 import type { Finding, Provider, ScanDoc, ScanProgress, ScanStatus, Target, UserDoc } from './types.js';
 
 let db: Firestore | null = null;
@@ -159,9 +160,23 @@ export async function writeFinding(scanId: string, finding: Finding): Promise<vo
 export async function readPrivateFix(
   scanId: string,
   findingId: string,
-): Promise<{ fix?: string; fixPrompt?: string } | null> {
+): Promise<{ fix?: string; fixPrompt?: string; explanation?: string } | null> {
   const snap = await findingsRef(scanId).doc(findingId).collection('private').doc('fix').get();
-  return snap.exists ? (snap.data() as { fix?: string; fixPrompt?: string }) : null;
+  return snap.exists ? (snap.data() as { fix?: string; fixPrompt?: string; explanation?: string }) : null;
+}
+
+/**
+ * Overwrite a finding's private/fix with a Claude-tailored fix (Slice 8). Keyed
+ * by the same deterministic finding id, so it replaces the canned fix written by
+ * writeFinding. `explanation` is the plain-English risk summary (Claude only).
+ */
+export async function writeAiFix(
+  scanId: string,
+  finding: Finding,
+  fix: { fix: string; fixPrompt: string; explanation: string },
+): Promise<void> {
+  const fid = engineFindingId(finding);
+  await findingsRef(scanId).doc(fid).collection('private').doc('fix').set({ ...fix, ai: true }, { merge: true });
 }
 
 export async function countFindings(scanId: string): Promise<number> {
@@ -175,6 +190,33 @@ export type PublicFinding = Omit<Finding, 'fix' | 'fixPrompt'>;
 export async function listFindings(scanId: string): Promise<PublicFinding[]> {
   const snap = await findingsRef(scanId).get();
   return snap.docs.map((d) => d.data() as PublicFinding);
+}
+
+/** Public findings WITH their doc ids (the id is needed to gate fixes via canReadFix). */
+export async function listFindingDocs(scanId: string): Promise<{ id: string; finding: PublicFinding }[]> {
+  const snap = await findingsRef(scanId).get();
+  return snap.docs.map((d) => ({ id: d.id, finding: d.data() as PublicFinding }));
+}
+
+const SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
+
+/**
+ * The single free "teaser" finding for a scan: the highest-severity finding
+ * (tie-broken by doc id) that actually has a fix. Deterministic + server-side —
+ * free users may read this one fix via /findingFix; every other finding is 402.
+ * Returns null for a scan with no findings.
+ */
+export async function getTeaserFindingId(scanId: string): Promise<string | null> {
+  const snap = await findingsRef(scanId).get();
+  if (snap.empty) return null;
+  const sorted = snap.docs
+    .map((d) => ({ id: d.id, sev: String((d.data() as { severity?: string }).severity ?? 'info') }))
+    .sort((a, b) => (SEV_RANK[b.sev] ?? 0) - (SEV_RANK[a.sev] ?? 0) || a.id.localeCompare(b.id));
+  for (const f of sorted) {
+    const fix = await readPrivateFix(scanId, f.id);
+    if (fix && (fix.fix || fix.fixPrompt)) return f.id;
+  }
+  return sorted[0]?.id ?? null; // no fixes at all — top finding (endpoint will 404 the fix)
 }
 
 export const startedFields = () => ({ startedAt: nowIso() });
@@ -228,6 +270,18 @@ export async function getPlan(uid: string): Promise<UserDoc['plan']> {
  */
 export async function setPlan(uid: string, plan: UserDoc['plan']): Promise<void> {
   await userRef(uid).set({ plan }, { merge: true });
+}
+
+/**
+ * Server-only billing writer (Polar webhook). Merges plan + subscription fields
+ * onto the user doc. `undefined` fields are ignored (ignoreUndefinedProperties),
+ * so callers pass only what changed.
+ */
+export async function setBilling(
+  uid: string,
+  patch: Partial<Pick<UserDoc, 'plan' | 'status' | 'subscriptionId' | 'polarCustomerId' | 'currentPeriodEnd' | 'cancelAtPeriodEnd'>>,
+): Promise<void> {
+  await userRef(uid).set(patch, { merge: true });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -329,4 +383,134 @@ export async function consumeOAuthState(state: string): Promise<OAuthState | nul
   if (!snap.exists) return null;
   await ref.delete();
   return snap.data() as OAuthState;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Account deletion — purge EVERY Firestore store keyed to a user (Admin only) */
+/* -------------------------------------------------------------------------- */
+
+/** Delete all docs a query returns, via a BulkWriter (batched, resilient). */
+async function deleteQuery(query: FirebaseFirestore.Query): Promise<number> {
+  const snap = await query.get();
+  if (snap.empty) return 0;
+  const writer = getDb().bulkWriter();
+  for (const doc of snap.docs) void writer.delete(doc.ref);
+  await writer.close();
+  return snap.size;
+}
+
+/**
+ * Permanently delete everything in Firestore tied to `uid`:
+ * owned scans (+ their findings and the private fix subtrees, via
+ * recursiveDelete), monitor events + run state, encrypted secrets, the user doc
+ * itself (which also drops embedded `apps[]`, `connections`, and the plan), and
+ * any dangling OAuth state. Best-effort per store — logs and continues so one
+ * failure can't strand the rest. Upstream token revocation and Firebase Auth
+ * deletion are handled by the caller (they need crypto/auth deps).
+ *
+ * Returns a small summary for logging/tests.
+ */
+export async function purgeUserFirestore(uid: string): Promise<{ scans: number; monitorEvents: number; monitorRuns: number }> {
+  const db = getDb();
+
+  // 1) Owned scans + their subcollections (findings + private/fix). A plain doc
+  //    delete would orphan the subcollections, so recursiveDelete each. Clear any
+  //    lingering staged upload zip too (normally deleted by the worker already).
+  const scans = await listUserScans(uid);
+  const staging = makeStaging();
+  for (const s of scans) {
+    if (s.type === 'upload') { try { await staging.delete(s.id); } catch (e) { console.error(`[deleteAccount] staging ${s.id}:`, e); } }
+    try { await db.recursiveDelete(scanRef(s.id)); } catch (e) { console.error(`[deleteAccount] scan ${s.id}:`, e); }
+  }
+
+  // 2) Monitor events + 3) run state (both top-level, carry a `uid` field).
+  let monitorEvents = 0, monitorRuns = 0;
+  try { monitorEvents = await deleteQuery(db.collection('monitorEvents').where('uid', '==', uid)); } catch (e) { console.error('[deleteAccount] monitorEvents:', e); }
+  try { monitorRuns = await deleteQuery(db.collection('monitorRuns').where('uid', '==', uid)); } catch (e) { console.error('[deleteAccount] monitorRuns:', e); }
+
+  // 4) Encrypted secrets (GitHub installation id / Supabase tokens).
+  try { await secretRef(uid).delete(); } catch (e) { console.error('[deleteAccount] secrets:', e); }
+
+  // 5) The user doc — drops profile + embedded apps[] + connections + plan.
+  try { await userRef(uid).delete(); } catch (e) { console.error('[deleteAccount] user:', e); }
+
+  // 6) Any dangling single-use OAuth CSRF state for this user.
+  try { await deleteQuery(db.collection('oauthStates').where('uid', '==', uid)); } catch (e) { console.error('[deleteAccount] oauthStates:', e); }
+
+  return { scans: scans.length, monitorEvents, monitorRuns };
+}
+
+/** Bare, normalized host (mirrors the frontend `hostOf` / groupApps grouping). */
+function hostOfValue(value: string | undefined): string {
+  if (!value) return '';
+  try {
+    return new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`).hostname.toLowerCase().replace(/^www\./, '');
+  } catch {
+    return value.trim().toLowerCase();
+  }
+}
+
+/** Identity of a single app to purge: any of these that are set are matched. */
+export interface AppTarget { appId?: string; githubRepo?: string; url?: string }
+
+/** Does this scan belong to the given app? Mirrors the frontend grouping. */
+function scanBelongsToApp(s: ScanDoc, t: AppTarget): boolean {
+  const repo = t.githubRepo?.toLowerCase();
+  if (t.appId && s.appId === t.appId) return true;
+  if (repo && s.type === 'deep' && s.sources?.githubRepo?.toLowerCase() === repo) return true;
+  if (t.url && s.type === 'url' && hostOfValue(s.target.value) === hostOfValue(t.url)) return true;
+  return false;
+}
+
+/**
+ * Permanently delete everything in Firestore tied to ONE app owned by `uid`:
+ * every matching scan (+ its findings and private/fix subtrees, via
+ * recursiveDelete, plus any staged upload), the monitoring run-state doc, all
+ * monitoring events for the app, and the app's entry in the client-owned
+ * `users/{uid}.apps[]` registry (which also drops its monitoring config).
+ *
+ * Account-level data is deliberately LEFT INTACT: the provider connections
+ * (`secrets/{uid}`, `users/{uid}.connections`) are shared across all of the
+ * user's apps, and the user's plan is untouched. Best-effort per store.
+ *
+ * `target` must carry at least one of appId / githubRepo / url. All reads are
+ * scoped to `uid`, so a caller can only ever purge its own app.
+ */
+export async function purgeAppFirestore(
+  uid: string,
+  target: AppTarget,
+): Promise<{ scans: number; monitorEvents: number; monitorRuns: number; registryRemoved: boolean }> {
+  const db = getDb();
+
+  // 1) Matching scans + their subcollections (findings + private/fix).
+  const all = await listUserScans(uid);
+  const mine = all.filter((s) => scanBelongsToApp(s, target));
+  const staging = makeStaging();
+  for (const s of mine) {
+    if (s.type === 'upload') { try { await staging.delete(s.id); } catch (e) { console.error(`[deleteApp] staging ${s.id}:`, e); } }
+    try { await db.recursiveDelete(scanRef(s.id)); } catch (e) { console.error(`[deleteApp] scan ${s.id}:`, e); }
+  }
+
+  // 2) Monitoring run-state + 3) events — keyed by appId (registry apps only).
+  let monitorEvents = 0, monitorRuns = 0;
+  if (target.appId) {
+    try { await db.collection('monitorRuns').doc(`${uid}__${target.appId}`).delete(); monitorRuns = 1; } catch (e) { console.error('[deleteApp] monitorRuns:', e); }
+    try { monitorEvents = await deleteQuery(db.collection('monitorEvents').where('uid', '==', uid).where('appId', '==', target.appId)); } catch (e) { console.error('[deleteApp] monitorEvents:', e); }
+  }
+
+  // 4) Remove the app from the client-owned registry (drops its monitoring config).
+  let registryRemoved = false;
+  if (target.appId) {
+    try {
+      const user = await getUser(uid);
+      const apps = ((user as unknown as { apps?: { id?: string }[] })?.apps) ?? [];
+      if (Array.isArray(apps) && apps.some((a) => a?.id === target.appId)) {
+        const next = apps.filter((a) => a?.id !== target.appId);
+        await userRef(uid).set({ apps: next }, { merge: true });
+        registryRemoved = true;
+      }
+    } catch (e) { console.error('[deleteApp] registry:', e); }
+  }
+
+  return { scans: mine.length, monitorEvents, monitorRuns, registryRemoved };
 }

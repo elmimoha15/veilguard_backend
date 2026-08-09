@@ -1,9 +1,10 @@
-import { createDeepScanDoc, hasConnection, getEncryptedSecret } from '../../shared/src/firestore.js';
+import { createDeepScanDoc, hasConnection, getEncryptedSecret, getPlan } from '../../shared/src/firestore.js';
 import { decryptJson } from '../../shared/src/crypto.js';
 import { installationHasRepo } from '../../shared/src/github-app.js';
 import { config } from '../../shared/src/config.js';
 import type { GitHubSecret } from '../../shared/src/types.js';
 import type { Queue } from '../../shared/src/queue.js';
+import { canScan, scanLimit } from '../../shared/src/usage.js';
 import { requireAuth, AuthError } from './auth.js';
 import { requirePaid } from './plan-gate.js';
 import { rateLimit } from './rate-limit.js';
@@ -78,6 +79,14 @@ export async function handleCreateDeepScan(
   // Rate limit deep scans per user (they're expensive).
   const rl = rateLimit(`deep|${uid}`);
   if (!rl.allowed) return { status: 429, body: { error: 'rate limited', retryAfterMs: rl.retryAfterMs } };
+
+  // Monthly scan cap (Guard = 30). Manual deep/upload + monitoring re-scans and
+  // URL scans all share this per-plan pool. Apps are unlimited.
+  const plan = await getPlan(uid);
+  if (!(await canScan(uid, plan))) {
+    const n = scanLimit(plan);
+    return { status: 429, body: { error: `Monthly scan limit reached (${n}/${n}). It resets next cycle — reach out if you need a higher limit.`, code: 'E_SCAN_LIMIT' } };
+  }
 
   const scanId = await createDeepScanDoc(uid, sources);
   await queue.enqueue({ scanId });

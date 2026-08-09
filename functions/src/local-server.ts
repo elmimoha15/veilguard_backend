@@ -4,21 +4,32 @@ import { config } from '../../shared/src/config.js';
 import { makeQueue } from '../../shared/src/queue.js';
 import { runScanJob } from '../../worker/src/runScan.js';
 import { ensureUser } from '../../shared/src/firestore.js';
+import { meWithUsage } from '../../shared/src/usage.js';
 import { sendWelcome } from '../../shared/src/emails/senders.js';
 import { handleCreateScan } from './createScan.js';
 import { handleClaimScan } from './claimScan.js';
 import { handleCreateDeepScan } from './createDeepScan.js';
 import { handleCreateUploadScan } from './createUploadScan.js';
-import { handleStartCheckout, handleConfirmUpgrade } from './billing.js';
+import {
+  handleCreateCheckout,
+  handleBillingPortal,
+  handleListTransactions,
+  handleInvoiceUrl,
+  handleCancelSubscription,
+  handleReactivateSubscription,
+} from './billing.js';
 import { handleFindingFix } from './findingFix.js';
-import { handlePolarWebhook } from './polarWebhook.js';
+import { handlePolarWebhook, flattenHeaders } from './polarWebhook.js';
 import { handleSendVerification, handleSendReset } from './authEmails.js';
 import { handleConnectGitHub, handleConnectSupabase, handleDisconnect } from './connect.js';
+import { handleDeleteAccount } from './deleteAccount.js';
+import { handleDeleteApp } from './deleteApp.js';
 import { handleListGitHubRepos } from './githubRepos.js';
 import { handleConnectBegin, handleGitHubCallback, handleSupabaseCallback, renderOAuthResult } from './oauth.js';
 import { handleRunSchedules } from './runSchedules.js';
+import { handleRunMonthlySummary } from './runMonthlySummary.js';
+import { handleScanReport, handleAccountReport } from './scanReport.js';
 import { handleGitHubWebhook } from './githubWebhook.js';
-import { handleUnlockedFinding } from './dev.js';
 import { resolveAuth, requireAuth, AuthError } from './auth.js';
 import { devCors } from './cors.js';
 import { loadEnv } from './loadEnv.js';
@@ -46,6 +57,7 @@ export function createDevServer() {
     const r = await handleGitHubWebhook(req.body as Buffer, {
       signature: req.header('x-hub-signature-256'),
       event: req.header('x-github-event'),
+      deliveryId: req.header('x-github-delivery'),
     }, queue);
     res.status(r.status).json(r.body);
   });
@@ -58,7 +70,7 @@ export function createDevServer() {
 
   // Polar billing webhook: raw body BEFORE express.json (HMAC needs exact bytes).
   app.post('/polarWebhook', express.raw({ type: '*/*', limit: '1mb' }), async (req: Request, res: Response) => {
-    const r = await handlePolarWebhook(req.body as Buffer, req.header('webhook-signature') || req.header('x-polar-signature'));
+    const r = await handlePolarWebhook(req.body as Buffer, flattenHeaders(req.headers));
     res.status(r.status).json(r.body);
   });
 
@@ -100,7 +112,7 @@ export function createDevServer() {
       const auth = await requireAuth(req.headers.authorization);
       const { user, created } = await ensureUser(auth);
       if (created && user.email) void sendWelcome(user.email).catch((e) => console.error('[email] welcome failed:', e));
-      res.json(user);
+      res.json(await meWithUsage(user));
     } catch (e) {
       if (e instanceof AuthError) return void res.status(e.status).json({ error: e.message });
       throw e;
@@ -125,6 +137,14 @@ export function createDevServer() {
     const r = await handleDisconnect(req.body, req.headers.authorization);
     res.status(r.status).json(r.body);
   });
+  app.post('/account/delete', async (req: Request, res: Response) => {
+    const r = await handleDeleteAccount(req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
+  app.post('/app/delete', async (req: Request, res: Response) => {
+    const r = await handleDeleteApp(req.body, req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
   app.post('/github/repos', async (req: Request, res: Response) => {
     const r = await handleListGitHubRepos(req.headers.authorization);
     res.status(r.status).json(r.body);
@@ -135,12 +155,28 @@ export function createDevServer() {
   });
 
   // --- Slice 6: billing (fake upgrade today; Polar later) + paid fix content ---
-  app.post('/billing/checkout', async (req: Request, res: Response) => {
-    const r = await handleStartCheckout(req.body, req.headers.authorization);
+  app.post('/createCheckout', async (req: Request, res: Response) => {
+    const r = await handleCreateCheckout(req.body, req.headers.authorization);
     res.status(r.status).json(r.body);
   });
-  app.post('/billing/confirm', async (req: Request, res: Response) => {
-    const r = await handleConfirmUpgrade(req.body, req.headers.authorization);
+  app.post('/billingPortal', async (req: Request, res: Response) => {
+    const r = await handleBillingPortal(req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
+  app.post('/billingTransactions', async (req: Request, res: Response) => {
+    const r = await handleListTransactions(req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
+  app.post('/billingInvoice', async (req: Request, res: Response) => {
+    const r = await handleInvoiceUrl(req.body, req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
+  app.post('/billingCancel', async (req: Request, res: Response) => {
+    const r = await handleCancelSubscription(req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
+  app.post('/billingReactivate', async (req: Request, res: Response) => {
+    const r = await handleReactivateSubscription(req.headers.authorization);
     res.status(r.status).json(r.body);
   });
   app.post('/findingFix', async (req: Request, res: Response) => {
@@ -163,6 +199,20 @@ export function createDevServer() {
     const r = await handleRunSchedules(queue, req.header('x-veilguard-cron'));
     res.status(r.status).json(r.body);
   });
+  app.post('/runMonthlySummary', async (req: Request, res: Response) => {
+    const r = await handleRunMonthlySummary(req.header('x-veilguard-cron'));
+    res.status(r.status).json(r.body);
+  });
+  app.post('/scanReport', async (req: Request, res: Response) => {
+    const r = await handleScanReport((req.body as { scanId?: string })?.scanId, req.headers.authorization);
+    if ('pdf' in r) res.status(200).type('application/pdf').setHeader('Content-Disposition', `attachment; filename="${r.filename}"`).send(r.pdf);
+    else res.status(r.status).json(r.body);
+  });
+  app.post('/accountReport', async (req: Request, res: Response) => {
+    const r = await handleAccountReport(req.headers.authorization);
+    if ('pdf' in r) res.status(200).type('application/pdf').setHeader('Content-Disposition', `attachment; filename="${r.filename}"`).send(r.pdf);
+    else res.status(r.status).json(r.body);
+  });
 
   // --- Real connections (OAuth): begin flow + provider callbacks ---
   app.post('/connect/begin', async (req: Request, res: Response) => {
@@ -180,15 +230,6 @@ export function createDevServer() {
     res.type('html').send(renderOAuthResult(query));
   });
 
-  // DEV-ONLY fake-paid preview (gated on DEV_FAKE_PAID + emulator; rules unchanged).
-  app.get('/dev/unlockedFinding', async (req: Request, res: Response) => {
-    const r = await handleUnlockedFinding(
-      req.query.scanId as string | undefined,
-      req.query.findingId as string | undefined,
-      req.headers.authorization,
-    );
-    res.status(r.status).json(r.body);
-  });
 
   app.use(express.static(DEV_UI_DIR));
   return app;

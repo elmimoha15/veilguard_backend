@@ -19,6 +19,7 @@ import {
   type PublicFinding,
 } from './firestore.js';
 import { sendAlert } from './emails/senders.js';
+import { canScan, scanLimit } from './usage.js';
 import { config } from './config.js';
 import type { Queue } from './queue.js';
 import type {
@@ -39,10 +40,11 @@ import type {
  * THE SINGLE gate point for monitoring — a paid feature. Every scheduled/webhook
  * enqueue goes through here (see enqueueMonitorScan), so a free user's apps are
  * never auto-re-scanned even if a stale 'push' cadence lingers on their doc.
- * (devFakePaid unlocks it on the emulator for local testing.)
+ * Requires the paid Guard plan (set only by the verified Polar webhook); a lapsed
+ * subscription (plan→free on revoke) auto-stops monitoring.
  */
 export async function canUseMonitoring(uid: string): Promise<boolean> {
-  return (await getPlan(uid)) !== 'free' || config.devFakePaid;
+  return (await getPlan(uid)) !== 'free';
 }
 
 /* -------------------------------------------------------------------------- */
@@ -150,6 +152,14 @@ async function hasActiveMonitorScan(uid: string, appId: string): Promise<boolean
 export async function enqueueMonitorScan(uid: string, app: RegistryApp, queue: Queue): Promise<string | null> {
   if (!(await canUseMonitoring(uid))) return null;
   if (await hasActiveMonitorScan(uid, app.id)) return null;
+  // Monitoring re-scans share the monthly scan pool. Over the cap → SKIP + log
+  // rather than silently burning past it (the user can still scan manually next
+  // cycle). Don't throw — monitoring must degrade quietly.
+  const plan = await getPlan(uid);
+  if (!(await canScan(uid, plan))) {
+    console.log(`[monitor] skip ${uid}/${app.id}: monthly scan cap reached (${scanLimit(plan)})`);
+    return null;
+  }
 
   const tag = { origin: 'monitor' as const, appId: app.id };
   let scanId: string | null = null;

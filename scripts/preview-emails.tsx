@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { renderBoth } from '../shared/src/emails/senders.js';
 import { SecurityAlert } from '../shared/src/emails/SecurityAlert.js';
-import { Welcome, VerifyEmail, PasswordReset, Marketing } from '../shared/src/emails/Transactional.js';
+import { Welcome, VerifyEmail, PasswordReset, Marketing, AccountDeleted, GuardActivated, PaymentFailed, SubscriptionCanceled } from '../shared/src/emails/Transactional.js';
 
 const OUT = fileURLToPath(new URL('../tmp/email-preview/', import.meta.url));
 
@@ -24,6 +24,10 @@ const samples: Record<string, React.ReactElement> = {
   welcome: <Welcome ctaUrl="https://veilguard.dev/dashboard" />,
   verify: <VerifyEmail verifyUrl="https://veilguard.dev/verify?code=demo" />,
   'password-reset': <PasswordReset resetUrl="https://veilguard.dev/reset?code=demo" />,
+  'account-deleted': <AccountDeleted />,
+  'guard-activated': <GuardActivated ctaUrl="https://veilguard.dev/dashboard" />,
+  'payment-failed': <PaymentFailed ctaUrl="https://veilguard.dev/billing" />,
+  'subscription-canceled': <SubscriptionCanceled endsOn="Sep 14, 2026" ctaUrl="https://veilguard.dev/billing" />,
   marketing: <Marketing heading="What Veilguard shipped this month" body={'We added folder-upload scans and push-triggered monitoring.\n\nHere is what that means for you.'} ctaText="See what's new" ctaUrl="https://veilguard.dev" unsubscribeUrl="https://veilguard.dev/settings" />,
 };
 

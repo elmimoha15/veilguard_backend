@@ -6,7 +6,9 @@ export type { Finding, ScanReport, ScanProgress, Target };
 export { FindingSchema };
 
 export type ScanStatus = 'queued' | 'running' | 'done' | 'error';
-export type Plan = 'free' | 'guard' | 'fixpack';
+export type Plan = 'free' | 'guard';
+/** Subscription status mirrored from Polar (server-written only). */
+export type BillingStatus = 'active' | 'past_due' | 'canceled' | 'expired';
 
 /** Input accepted by POST /createScan. */
 export const CreateScanInputSchema = z.object({
@@ -20,14 +22,29 @@ export const UserDocSchema = z.object({
   email: z.string().optional(),
   displayName: z.string().optional(),
   createdAt: z.string(),
-  // 'free' by default; only the server (Slice 6 billing) may change it.
-  plan: z.enum(['free', 'guard', 'fixpack']),
+  // 'free' by default; only the server (Slice 6 billing / Polar webhook) may change it.
+  plan: z.enum(['free', 'guard']),
   provider: z.string().optional(),
   // Reserved for Slice 5 (GitHub/Supabase). Empty for now.
   connections: z.record(z.string(), z.unknown()).default({}),
   alertEmail: z.string().optional(),
   // New users start un-onboarded; the client flips this after onboarding.
   onboarded: z.boolean().default(false),
+  // --- Billing (Slice 6) — server-written ONLY (Polar webhook). Additive/optional. ---
+  status: z.enum(['active', 'past_due', 'canceled', 'expired']).optional(),
+  subscriptionId: z.string().optional(),
+  polarCustomerId: z.string().optional(),
+  currentPeriodEnd: z.string().optional(), // ISO
+  cancelAtPeriodEnd: z.boolean().optional(),
+  // Account-wide notification prefs — CLIENT-written (see firestore.rules). Alert
+  // prefs are per-app (apps[i].monitoring); these are account-level toggles. The
+  // monthly-summary job reads `notifications.summary` (default on when absent).
+  notifications: z.object({
+    email: z.boolean(),
+    critical: z.boolean(),
+    deploy: z.boolean(),
+    summary: z.boolean(),
+  }).partial().optional(),
 });
 export type UserDoc = z.infer<typeof UserDocSchema>;
 

@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { config } from '../../shared/src/config.js';
+import { getDb } from '../../shared/src/firestore.js';
 import type { Queue } from '../../shared/src/queue.js';
 import { listMonitoredApps, getMonitorRun, enqueueMonitorScan, markPushEnqueued } from '../../shared/src/monitor.js';
 import type { HttpResult } from './createScan.js';
@@ -27,7 +28,7 @@ export function verifySignature(rawBody: Buffer, signature: string | undefined):
  */
 export async function handleGitHubWebhook(
   rawBody: Buffer,
-  headers: { signature?: string; event?: string },
+  headers: { signature?: string; event?: string; deliveryId?: string },
   queue: Queue,
   now = Date.now(),
 ): Promise<HttpResult> {
@@ -37,6 +38,21 @@ export async function handleGitHubWebhook(
   // Signature is valid; only act on push events (ack pings/others).
   if (headers.event && headers.event !== 'push') {
     return { status: 200, body: { ignored: headers.event } };
+  }
+
+  // Idempotency: GitHub retries deliveries. Record the delivery id (X-GitHub-
+  // Delivery) transactionally so a replay is a no-op — the debounce below only
+  // covers replays within its window, not a retry hours later. (Mirror Polar.)
+  const deliveryId = headers.deliveryId;
+  if (deliveryId) {
+    const ref = getDb().collection('webhookDeliveries').doc(deliveryId);
+    const fresh = await getDb().runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (snap.exists) return false;
+      tx.set(ref, { source: 'github', at: new Date(now).toISOString() });
+      return true;
+    });
+    if (!fresh) return { status: 200, body: { deduped: true } };
   }
 
   let repo = '';

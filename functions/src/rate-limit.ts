@@ -6,14 +6,22 @@ import { config } from '../../shared/src/config.js';
  */
 const hits = new Map<string, number[]>();
 
-export function rateLimit(key: string): { allowed: boolean; retryAfterMs: number } {
+/**
+ * Sliding-window limiter. `max`/`windowMs` default to the base createScan limit
+ * (5/min); pass overrides for a different bucket (e.g. the broader per-IP cap).
+ */
+export function rateLimit(
+  key: string,
+  max: number = config.rateLimitMax,
+  windowMs: number = config.rateLimitWindowMs,
+): { allowed: boolean; retryAfterMs: number } {
   const now = Date.now();
-  const windowStart = now - config.rateLimitWindowMs;
+  const windowStart = now - windowMs;
   const arr = (hits.get(key) ?? []).filter((t) => t > windowStart);
 
-  if (arr.length >= config.rateLimitMax) {
+  if (arr.length >= max) {
     const oldest = arr[0]!;
-    return { allowed: false, retryAfterMs: oldest + config.rateLimitWindowMs - now };
+    return { allowed: false, retryAfterMs: oldest + windowMs - now };
   }
   arr.push(now);
   hits.set(key, arr);

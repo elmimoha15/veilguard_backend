@@ -1,5 +1,6 @@
 import { CreateScanInputSchema } from '../../shared/src/types.js';
-import { createScanDoc } from '../../shared/src/firestore.js';
+import { createScanDoc, getPlan } from '../../shared/src/firestore.js';
+import { canScan, scanLimit } from '../../shared/src/usage.js';
 import type { Queue } from '../../shared/src/queue.js';
 import { config } from '../../shared/src/config.js';
 import { rateLimit } from './rate-limit.js';
@@ -45,10 +46,29 @@ export async function handleCreateScan(
     return { status: 400, body: { error: guard.error } };
   }
 
-  const key = `${clientIp}|${target.value}`;
-  const rl = rateLimit(key);
+  // Two buckets: a tight per-(IP,target) cap (repeat-scan spam) AND a broader
+  // per-IP cap across ALL targets — otherwise one IP can spray unlimited distinct
+  // URLs (5 each). Both are in-memory/per-process (a distributed limiter is future).
+  const rl = rateLimit(`${clientIp}|${target.value}`);
   if (!rl.allowed) {
     return { status: 429, body: { error: 'rate limited', retryAfterMs: rl.retryAfterMs } };
+  }
+  const ipRl = rateLimit(`ip|${clientIp}`, config.freeScanIpMax, config.freeScanIpWindowMs);
+  if (!ipRl.allowed) {
+    return { status: 429, body: { error: 'rate limited', retryAfterMs: ipRl.retryAfterMs } };
+  }
+
+  // Monthly scan cap (owned scans only — anonymous public scans are exempt, they
+  // are IP-rate-limited instead). Every scan type draws from the per-plan pool.
+  if (opts.ownerUid) {
+    const plan = await getPlan(opts.ownerUid);
+    if (!(await canScan(opts.ownerUid, plan))) {
+      const n = scanLimit(plan);
+      return {
+        status: 429,
+        body: { error: `Monthly scan limit reached (${n}/${n}). It resets next cycle — upgrade or reach out for a higher limit.`, code: 'E_SCAN_LIMIT' },
+      };
+    }
   }
 
   const scanId = await createScanDoc(target, opts.ownerUid ?? null);

@@ -1,6 +1,6 @@
 import { mkdirSync, cpSync, rmSync, existsSync, readdirSync, statSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { execa } from 'execa';
 import { buildContext, runScan as runEngine, grade, findingId } from 'veilguard-scanner';
 import type { Finding, Counts, Grade } from 'veilguard-scanner';
@@ -11,10 +11,13 @@ import { refreshAccessToken, fetchSchemaSql, probeAnonReadableTables } from '../
 import {
   getEncryptedSecret,
   writeFinding,
+  writeAiFix,
   updateProgress,
   updateEncryptedSecret,
   patchConnectionMeta,
 } from '../../shared/src/firestore.js';
+import { generateFix, fixCacheKey, readFixCache, writeFixCache, AiFixUnavailableError } from '../../shared/src/claude-fix.js';
+import { underAiFixCap, bumpClaudeCall } from '../../shared/src/usage.js';
 import type { ScanDoc, GitHubSecret, SupabaseSecret } from '../../shared/src/types.js';
 
 /** Thrown when a Supabase token can't be refreshed — the user must reconnect. */
@@ -259,7 +262,93 @@ export async function runDeepEngine(
     seen.add(k);
     return true;
   });
+
+  // Slice 8: replace the canned fix with a Claude-tailored one for the top
+  // findings, while the source workspace is still on disk. Best-effort — never
+  // fails the scan. Deep scans are Guard-only, so this is inherently paid-only.
+  await enhanceWithAiFixes(scanId, workspace, uniq, doc.ownerUid ?? undefined);
+
   return { ...grade(uniq), stack };
+}
+
+const AI_SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
+
+/** file:line (or url) label for a finding, for the fix prompt context. */
+function findingWhere(f: Finding): string | undefined {
+  const loc = f.location;
+  if (!loc) return undefined;
+  if (loc.file) return loc.line ? `${loc.file}:${loc.line}` : loc.file;
+  return loc.url;
+}
+
+/**
+ * Read a small code window around a finding's location from the LIVE workspace.
+ * Returns null when there's no file location (URL/DB findings) or the file is
+ * gone. Path-traversal guarded — never reads outside the workspace.
+ */
+function extractSnippet(ws: string, loc: Finding['location']): string | null {
+  if (!loc?.file) return null;
+  const root = resolve(ws);
+  const abs = resolve(ws, loc.file);
+  if (abs !== root && !abs.startsWith(root + '/')) return null; // outside workspace → refuse
+  if (!existsSync(abs) || !statSync(abs).isFile()) return null;
+  let content: string;
+  try {
+    content = readFileSync(abs, 'utf8');
+  } catch {
+    return null;
+  }
+  const lines = content.split('\n');
+  if (loc.line && loc.line >= 1) {
+    const start = Math.max(0, loc.line - 5);
+    return lines.slice(start, Math.min(lines.length, loc.line + 4)).join('\n');
+  }
+  return lines.slice(0, 40).join('\n');
+}
+
+/**
+ * For the top-N (by severity) deep findings that have a code location + a canned
+ * fix, generate a Claude-tailored fix and overwrite private/fix. Cached by
+ * hash(ruleId+snippet) so identical/unchanged code reuses one result (no call).
+ * Honors the per-scan cap (top-N) and the per-user monthly Claude cap.
+ */
+async function enhanceWithAiFixes(scanId: string, ws: string, findings: Finding[], uid: string | undefined): Promise<void> {
+  if (!config.aiFixEnabled || !uid) return;
+  const candidates = findings
+    .filter((f) => f.location?.file && (f.fix || f.fixPrompt))
+    .sort((a, b) => (AI_SEV_RANK[b.severity] ?? 0) - (AI_SEV_RANK[a.severity] ?? 0))
+    .slice(0, config.aiFixMaxPerScan);
+
+  let capLogged = false;
+  for (const f of candidates) {
+    const snippet = extractSnippet(ws, f.location);
+    if (!snippet) continue;
+    const key = fixCacheKey(f.ruleId, snippet);
+    let ai = await readFixCache(key); // cache hit → no Claude call, no usage
+    if (!ai) {
+      if (!(await underAiFixCap(uid))) {
+        if (!capLogged) { console.log(`[claude-fix] monthly AI-fix cap reached for ${uid} — remaining findings keep canned fixes`); capLogged = true; }
+        continue;
+      }
+      try {
+        ai = await generateFix(
+          { ruleId: f.ruleId, category: f.category, severity: f.severity, title: f.title, whyItMatters: f.whyItMatters, where: findingWhere(f) },
+          snippet,
+        );
+      } catch (e) {
+        // Account-level failure (no credits / bad key / rate limit) — affects
+        // every finding, so stop now and keep canned fixes for the rest.
+        if (e instanceof AiFixUnavailableError) {
+          console.log(`[claude-fix] AI fixes unavailable this scan — using canned fixes (${e.message})`);
+          break;
+        }
+        throw e;
+      }
+      await bumpClaudeCall(uid); // one billable generation attempt (valid or not)
+      if (ai) await writeFixCache(key, ai, config.aiFixModel);
+    }
+    if (ai) await writeAiFix(scanId, f, ai);
+  }
 }
 
 /** A live "anon can read this table" finding from the active RLS probe. */

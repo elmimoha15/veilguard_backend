@@ -35,12 +35,40 @@ service cloud.firestore {
       allow create: if signedIn() && request.auth.uid == uid
                     && request.resource.data.plan == 'free'
                     && request.resource.data.uid == uid;
-      // May edit profile fields, but NOT plan or uid (billing changes plan
-      // server-side in Slice 6).
+      // May edit profile fields, but NOT plan/uid or any billing field — those
+      // are written server-side ONLY (Polar webhook via the Admin SDK). `.get(f,
+      // null)` compares whether the field is present or absent, so a client can
+      // neither change nor introduce these fields. Apps are unlimited; the only
+      // quota is the server-enforced monthly scan cap (see createScan/…).
       allow update: if signedIn() && request.auth.uid == uid
                     && request.resource.data.plan == resource.data.plan
-                    && request.resource.data.uid == resource.data.uid;
+                    && request.resource.data.uid == resource.data.uid
+                    && request.resource.data.get('status', null) == resource.data.get('status', null)
+                    && request.resource.data.get('subscriptionId', null) == resource.data.get('subscriptionId', null)
+                    && request.resource.data.get('polarCustomerId', null) == resource.data.get('polarCustomerId', null)
+                    && request.resource.data.get('currentPeriodEnd', null) == resource.data.get('currentPeriodEnd', null)
+                    && request.resource.data.get('cancelAtPeriodEnd', null) == resource.data.get('cancelAtPeriodEnd', null);
       allow delete: if false;
+    }
+
+    // ---- usage/{uid} : server-authoritative per-user usage counters ----
+    // Written ONLY by the Admin SDK (scan/AI-fix accounting). A user may read its
+    // own quota (the /me endpoint also surfaces it); clients can never write it.
+    match /usage/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow list, write: if false;
+    }
+
+    // ---- webhookDeliveries/{id} + fixCache/{key} : server-only ----
+    // GitHub webhook delivery-id dedup, and the cross-user cache of Claude-
+    // generated fixes. Both Admin-SDK only; never client-accessible.
+    match /webhookDeliveries/{id} { allow read, write: if false; }
+    match /fixCache/{key} { allow read, write: if false; }
+
+    // ---- billingEvents/{eventId} : processed Polar webhook ids (idempotency) ----
+    // Server-only (Admin SDK). Never client-accessible.
+    match /billingEvents/{eventId} {
+      allow read, write: if false;
     }
 
     // ---- scans/{scanId} ----
