@@ -21,6 +21,7 @@ import { handleAllFixesPrompt } from './allFixesPrompt.js';
 import { handlePolarWebhook, flattenHeaders } from './polarWebhook.js';
 import { handleSendVerification, handleSendReset } from './authEmails.js';
 import { handleFeedback } from './feedback.js';
+import { prodCors } from './cors.js';
 import { handleConnectGitHub, handleConnectSupabase, handleDisconnect } from './connect.js';
 import { handleDeleteAccount } from './deleteAccount.js';
 import { handleDeleteApp } from './deleteApp.js';
@@ -40,6 +41,11 @@ import { resolveAuth, requireAuth, AuthError } from './auth.js';
  */
 export function createApiApp() {
   const app = express();
+
+  // CORS for the browser frontend (veilguard.dev → api.veilguard.dev). Must run
+  // before the routes so it also answers the preflight. Webhooks send no Origin
+  // and are unaffected. Without this, the browser blocks every app→API call.
+  app.use(prodCors);
 
   const queue = makeQueue(); // cloudtasks in prod; throws if memory w/o handler
 
