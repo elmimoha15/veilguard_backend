@@ -17,19 +17,33 @@ WORKDIR /app
 
 # Bring in the local scanner dependency (built dist is published via its files).
 COPY veilguard-scanner /veilguard-scanner
-COPY veilguard-backend/package.json veilguard-backend/tsconfig.json veilguard-backend/tsconfig.build.json ./
+# The scanner is a file: dep consumed via its built dist; install its OWN runtime
+# deps (zod, etc.) so the tsc compile AND runtime can resolve them. Without this,
+# the backend's zod-inferred types collapse to {} and the scanner fails at runtime.
+RUN cd /veilguard-scanner && npm ci --omit=dev --no-audit --no-fund
+COPY veilguard-backend/package.json veilguard-backend/package-lock.json veilguard-backend/tsconfig.json veilguard-backend/tsconfig.build.json ./
 COPY veilguard-backend/shared ./shared
 COPY veilguard-backend/worker ./worker
 COPY veilguard-backend/functions ./functions
 
-RUN npm install --omit=dev --no-audit --no-fund \
-  && npm install --no-save typescript@5 \
-  && npx tsc -p tsconfig.build.json
+# `npm ci` installs the EXACT locked versions (incl. devDependencies: @types/*,
+# zod, typescript) so the tsc compile resolves types identically to local; then
+# prune to production-only deps for the runtime stage. (A bare `npm install`
+# without the lockfile drifts dependency versions and breaks type resolution.)
+RUN npm ci --no-audit --no-fund \
+  && npx tsc -p tsconfig.build.json \
+  && npm prune --omit=dev
 
 # ---- runtime stage ----
 FROM node:20-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
+
+# `git` is required at runtime for real GitHub clones during deep scans (the
+# slim base image doesn't ship it); ca-certificates for HTTPS to GitHub/Supabase.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
