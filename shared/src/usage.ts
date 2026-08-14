@@ -22,6 +22,11 @@ export function scanLimit(plan: string | undefined): number {
   return plan === 'guard' ? config.guardMaxScansPerMonth : config.freeMaxScansPerMonth;
 }
 
+/** Effective allowance: comp (owner/testing) accounts are effectively unlimited. */
+export function effectiveScanLimit(plan: string | undefined, comp = false): number {
+  return comp ? 1_000_000 : scanLimit(plan);
+}
+
 export interface UsageCounts {
   /** Completed (done) scans in the last 30 days — all types; the "used" number. */
   scansThisMonth: number;
@@ -47,8 +52,8 @@ export async function getUsageCounts(uid: string, now = Date.now()): Promise<Usa
 }
 
 /** May this user start another scan this 30-day window (any scan type)? */
-export async function canScan(uid: string, plan: string | undefined, now = Date.now()): Promise<boolean> {
-  return (await getUsageCounts(uid, now)).activeScansThisMonth < scanLimit(plan);
+export async function canScan(uid: string, plan: string | undefined, comp = false, now = Date.now()): Promise<boolean> {
+  return (await getUsageCounts(uid, now)).activeScansThisMonth < effectiveScanLimit(plan, comp);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -92,6 +97,6 @@ export async function meWithUsage(user: UserDoc): Promise<Record<string, unknown
   return {
     ...user,
     usage: { scansThisMonth: counts.scansThisMonth },
-    caps: { maxScansPerMonth: scanLimit(user.plan) },
+    caps: { maxScansPerMonth: effectiveScanLimit(user.plan, user.comp) },
   };
 }

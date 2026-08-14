@@ -1,6 +1,6 @@
 import { CreateScanInputSchema } from '../../shared/src/types.js';
-import { createScanDoc, getPlan } from '../../shared/src/firestore.js';
-import { canScan, scanLimit } from '../../shared/src/usage.js';
+import { createScanDoc, getPlanAndComp } from '../../shared/src/firestore.js';
+import { canScan, effectiveScanLimit } from '../../shared/src/usage.js';
 import type { Queue } from '../../shared/src/queue.js';
 import { config } from '../../shared/src/config.js';
 import { rateLimit } from './rate-limit.js';
@@ -61,9 +61,9 @@ export async function handleCreateScan(
   // Monthly scan cap (owned scans only — anonymous public scans are exempt, they
   // are IP-rate-limited instead). Every scan type draws from the per-plan pool.
   if (opts.ownerUid) {
-    const plan = await getPlan(opts.ownerUid);
-    if (!(await canScan(opts.ownerUid, plan))) {
-      const n = scanLimit(plan);
+    const { plan, comp } = await getPlanAndComp(opts.ownerUid);
+    if (!(await canScan(opts.ownerUid, plan, comp))) {
+      const n = effectiveScanLimit(plan, comp);
       return {
         status: 429,
         body: { error: `Monthly scan limit reached (${n}/${n}). It resets next cycle — upgrade or reach out for a higher limit.`, code: 'E_SCAN_LIMIT' },

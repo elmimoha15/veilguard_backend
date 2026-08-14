@@ -43,6 +43,7 @@ service cloud.firestore {
       allow update: if signedIn() && request.auth.uid == uid
                     && request.resource.data.plan == resource.data.plan
                     && request.resource.data.uid == resource.data.uid
+                    && request.resource.data.get('comp', null) == resource.data.get('comp', null)
                     && request.resource.data.get('status', null) == resource.data.get('status', null)
                     && request.resource.data.get('subscriptionId', null) == resource.data.get('subscriptionId', null)
                     && request.resource.data.get('polarCustomerId', null) == resource.data.get('polarCustomerId', null)

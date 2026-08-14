@@ -249,15 +249,28 @@ export const finishedFields = () => ({ finishedAt: nowIso() });
  */
 export async function ensureUser(info: { uid: string; email?: string; name?: string; provider?: string }): Promise<{ user: UserDoc; created: boolean }> {
   const ref = userRef(info.uid);
+  // Comp (owner/testing) accounts get free Guard. `info.email` is the VERIFIED
+  // Firebase token email (from requireAuth), so this can't be forged. The stamp
+  // re-applies on every /me, so it self-heals and survives any reset.
+  const comp = !!info.email && config.compGuardEmails.includes(info.email.toLowerCase());
   return getDb().runTransaction(async (tx) => {
     const snap = await tx.get(ref);
-    if (snap.exists) return { user: snap.data() as UserDoc, created: false };
+    if (snap.exists) {
+      const user = snap.data() as UserDoc;
+      // Heal an existing comp account that isn't Guard/comp yet (never downgrades).
+      if (comp && (user.plan !== 'guard' || !user.comp)) {
+        tx.update(ref, { plan: 'guard', comp: true });
+        return { user: { ...user, plan: 'guard' as const, comp: true }, created: false };
+      }
+      return { user, created: false };
+    }
     const doc: UserDoc = {
       uid: info.uid,
       email: info.email,
       displayName: info.name,
       createdAt: nowIso(),
-      plan: 'free',
+      plan: comp ? 'guard' : 'free',
+      ...(comp ? { comp: true } : {}),
       provider: info.provider,
       connections: {},
       alertEmail: info.email,
@@ -266,6 +279,12 @@ export async function ensureUser(info: { uid: string; email?: string; name?: str
     tx.set(ref, doc);
     return { user: doc, created: true };
   });
+}
+
+/** Plan + comp flag in one read — for the scan-start cap checks. */
+export async function getPlanAndComp(uid: string): Promise<{ plan: UserDoc['plan']; comp: boolean }> {
+  const u = await getUser(uid);
+  return { plan: u?.plan ?? 'free', comp: !!u?.comp };
 }
 
 export async function getUser(uid: string): Promise<UserDoc | null> {

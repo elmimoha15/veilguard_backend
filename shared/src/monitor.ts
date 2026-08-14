@@ -11,6 +11,7 @@ import {
   getScan,
   getUser,
   getPlan,
+  getPlanAndComp,
   listUserScans,
   listFindings,
   hasConnection,
@@ -19,7 +20,7 @@ import {
   type PublicFinding,
 } from './firestore.js';
 import { sendAlert } from './emails/senders.js';
-import { canScan, scanLimit } from './usage.js';
+import { canScan, effectiveScanLimit } from './usage.js';
 import { config } from './config.js';
 import type { Queue } from './queue.js';
 import type {
@@ -155,9 +156,9 @@ export async function enqueueMonitorScan(uid: string, app: RegistryApp, queue: Q
   // Monitoring re-scans share the monthly scan pool. Over the cap → SKIP + log
   // rather than silently burning past it (the user can still scan manually next
   // cycle). Don't throw — monitoring must degrade quietly.
-  const plan = await getPlan(uid);
-  if (!(await canScan(uid, plan))) {
-    console.log(`[monitor] skip ${uid}/${app.id}: monthly scan cap reached (${scanLimit(plan)})`);
+  const { plan, comp } = await getPlanAndComp(uid);
+  if (!(await canScan(uid, plan, comp))) {
+    console.log(`[monitor] skip ${uid}/${app.id}: monthly scan cap reached (${effectiveScanLimit(plan, comp)})`);
     return null;
   }
 

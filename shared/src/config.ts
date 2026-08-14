@@ -169,6 +169,15 @@ export const config = {
   // deploy env can tune them without a rebuild.
   get freeMaxScansPerMonth(): number { return num('FREE_MAX_SCANS_PER_MONTH', 2); },
   get guardMaxScansPerMonth(): number { return num('GUARD_MAX_SCANS_PER_MONTH', 30); },
+  // Comp allowlist: exact emails (server-verified via the Firebase token) that get
+  // free Guard + effectively-unlimited scans, for owner/testing. Set from a
+  // comma-separated env var; never grants access to anyone not listed here.
+  get compGuardEmails(): string[] {
+    return (process.env.COMP_GUARD_EMAILS || '')
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean);
+  },
   // AI-fix cost guard: at most N findings per scan get a Claude fix (the rest use
   // the engine's canned fix), and at most M Claude calls per user per month.
   get aiFixMaxPerScan(): number { return num('AI_FIX_MAX_PER_SCAN', 8); },

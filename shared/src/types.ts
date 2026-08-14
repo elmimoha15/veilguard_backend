@@ -24,6 +24,9 @@ export const UserDocSchema = z.object({
   createdAt: z.string(),
   // 'free' by default; only the server (Slice 6 billing / Polar webhook) may change it.
   plan: z.enum(['free', 'guard']),
+  // Comp (owner/testing) account: free Guard + effectively-unlimited scans. Set
+  // SERVER-ONLY from the COMP_GUARD_EMAILS allowlist (rules-guarded like `plan`).
+  comp: z.boolean().optional(),
   provider: z.string().optional(),
   // Reserved for Slice 5 (GitHub/Supabase). Empty for now.
   connections: z.record(z.string(), z.unknown()).default({}),
