@@ -111,6 +111,16 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // ---- feedback/{id} : user feedback/help submissions — server-only ----
+    // Every submission is written by the Admin SDK (POST /feedback), which
+    // bypasses these rules. Clients can NEVER create, read, list, update, or
+    // delete — feedback is private to the owner (read it in the Firebase console
+    // or via the Admin SDK). This prevents both enumeration of others' messages
+    // and direct client spam into the collection.
+    match /feedback/{id} {
+      allow read, write: if false;
+    }
+
     // Everything else denied by default.
   }
 }

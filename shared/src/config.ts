@@ -107,6 +107,8 @@ export const config = {
   get emailFrom(): string { return process.env.EMAIL_FROM || 'Veilguard <hello@veilguard.dev>'; },
   get marketingFromEmail(): string { return process.env.EMAIL_MARKETING_FROM || 'Veilguard <news@veilguard.dev>'; },
   get emailReplyTo(): string { return process.env.EMAIL_REPLY_TO || 'support@veilguard.dev'; },
+  // Inbox that receives user feedback/help submissions (owner-facing).
+  get supportEmail(): string { return process.env.SUPPORT_EMAIL || 'support@veilguard.dev'; },
   // Base URL the app is served from — used in email links + Admin action-code URLs.
   get appBaseUrl(): string { return process.env.APP_BASE_URL || this.frontendUrl || 'https://veilguard.dev'; },
 

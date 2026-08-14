@@ -19,8 +19,10 @@ import {
   handleReactivateSubscription,
 } from './billing.js';
 import { handleFindingFix } from './findingFix.js';
+import { handleAllFixesPrompt } from './allFixesPrompt.js';
 import { handlePolarWebhook, flattenHeaders } from './polarWebhook.js';
 import { handleSendVerification, handleSendReset } from './authEmails.js';
+import { handleFeedback } from './feedback.js';
 import { handleConnectGitHub, handleConnectSupabase, handleDisconnect } from './connect.js';
 import { handleDeleteAccount } from './deleteAccount.js';
 import { handleDeleteApp } from './deleteApp.js';
@@ -183,6 +185,10 @@ export function createDevServer() {
     const r = await handleFindingFix(req.body?.scanId, req.body?.findingId, req.headers.authorization);
     res.status(r.status).json(r.body);
   });
+  app.post('/allFixesPrompt', async (req: Request, res: Response) => {
+    const r = await handleAllFixesPrompt(req.body?.scanId, req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
 
   // --- Branded auth emails (verify + reset) via Resend, not Firebase's mailer ---
   app.post('/auth/sendVerification', async (req: Request, res: Response) => {
@@ -191,6 +197,15 @@ export function createDevServer() {
   });
   app.post('/auth/sendReset', async (req: Request, res: Response) => {
     const r = await handleSendReset(req.body, req.ip || req.socket.remoteAddress || 'local');
+    res.status(r.status).json(r.body);
+  });
+
+  // --- User feedback / help (anonymous allowed; stored server-side) ---
+  app.post('/feedback', async (req: Request, res: Response) => {
+    let auth = null;
+    try { auth = await resolveAuth(req.headers.authorization); }
+    catch (e) { if (e instanceof AuthError) return res.status(e.status).json({ error: e.message }); throw e; }
+    const r = await handleFeedback(req.body, auth, req.ip || req.socket.remoteAddress || 'local');
     res.status(r.status).json(r.body);
   });
 
