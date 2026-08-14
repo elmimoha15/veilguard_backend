@@ -156,13 +156,29 @@ export async function writeFinding(scanId: string, finding: Finding): Promise<vo
   }
 }
 
-/** Admin-only read of the locked fix content (used by the worker/tests, never a client). */
+/** Admin-only read of the locked fix content (used by the worker/tests, never a client).
+ *  `ai:true` marks a Claude-tailored fix (vs the engine's canned one). */
 export async function readPrivateFix(
   scanId: string,
   findingId: string,
-): Promise<{ fix?: string; fixPrompt?: string; explanation?: string } | null> {
+): Promise<{ fix?: string; fixPrompt?: string; explanation?: string; ai?: boolean } | null> {
   const snap = await findingsRef(scanId).doc(findingId).collection('private').doc('fix').get();
-  return snap.exists ? (snap.data() as { fix?: string; fixPrompt?: string; explanation?: string }) : null;
+  return snap.exists ? (snap.data() as { fix?: string; fixPrompt?: string; explanation?: string; ai?: boolean }) : null;
+}
+
+/** Admin read of ONE public finding (by its doc id) — for on-demand fix generation. */
+export async function getPublicFinding(scanId: string, findingId: string): Promise<PublicFinding | null> {
+  const snap = await findingsRef(scanId).doc(findingId).get();
+  return snap.exists ? (snap.data() as PublicFinding) : null;
+}
+
+/** Store a Claude fix on a finding BY its known doc id (on-demand path; no engine id recompute). */
+export async function writeAiFixById(
+  scanId: string,
+  findingId: string,
+  fix: { fix: string; fixPrompt: string; explanation: string },
+): Promise<void> {
+  await findingsRef(scanId).doc(findingId).collection('private').doc('fix').set({ ...fix, ai: true }, { merge: true });
 }
 
 /**
