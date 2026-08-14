@@ -1,8 +1,9 @@
 import { existsSync, statSync } from 'node:fs';
 import { buildContext, runScan as runEngine } from 'veilguard-scanner';
 import type { ScanProgress, Grade, Counts } from 'veilguard-scanner';
-import { buildDeepWorkspace, runDeepEngine, removeWorkspace, workspacePath } from './deepScan.js';
+import { buildDeepWorkspace, runDeepEngine, removeWorkspace, workspacePath, NeedsReconnectError } from './deepScan.js';
 import { buildUploadWorkspace } from './uploadScan.js';
+import type { ScanErrorReason } from '../../shared/src/types.js';
 import { config } from '../../shared/src/config.js';
 import {
   getScan,
@@ -15,7 +16,7 @@ import {
 import { recordMonitoringResult } from '../../shared/src/monitor.js';
 import type { ScanJob } from '../../shared/src/types.js';
 
-class ScanTimeoutError extends Error {
+export class ScanTimeoutError extends Error {
   code = 'E_TIMEOUT';
   // `E_TIMEOUT` marker lets the client render scan-type-aware copy reliably,
   // independent of the human wording.
@@ -38,6 +39,17 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
       },
     );
   });
+}
+
+/** Classify a failure into a coarse, client-mappable reason (drives friendly UI + retry). */
+export function classifyError(err: unknown): ScanErrorReason {
+  if (err instanceof ScanTimeoutError) return 'timeout';
+  if (err instanceof NeedsReconnectError) return 'needs-reconnect';
+  const m = err instanceof Error ? err.message : String(err);
+  if (m.startsWith('target URL unreachable')) return 'unreachable';
+  if (m.includes('no scannable files')) return 'empty-upload';
+  if (m.includes('uploaded archive not found') || m.startsWith('repo path not found')) return 'not-found';
+  return 'engine-error';
 }
 
 /** Reject early for targets we know are invalid, so they end "error" cleanly. */
@@ -119,8 +131,9 @@ export async function runScanJob(job: ScanJob): Promise<void> {
     completed = true;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await setStatus(scanId, 'error', { error: message, ...finishedFields() });
-    console.error(`[worker] runScan: ${scanId} error — ${message}`);
+    const errorReason = classifyError(err);
+    await setStatus(scanId, 'error', { error: message, errorReason, ...finishedFields() });
+    console.error(`[worker] runScan: ${scanId} error (${errorReason}) — ${message}`);
   } finally {
     // Guaranteed cleanup: the user's source never outlives the scan, even on
     // error/timeout. Source is never written to Firestore — only findings.

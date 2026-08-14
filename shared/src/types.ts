@@ -71,7 +71,11 @@ export const ScanDocSchema = z.object({
   grade: GradeSchema.optional(),
   score: z.number().int().optional(),
   counts: CountsSchema.optional(),
+  // Free-text failure message (server logs / debugging). Never shown raw to users.
   error: z.string().optional(),
+  // Coarse, client-mappable failure reason — the worker classifies each failure so
+  // the UI can show a specific, friendly message and retry only transient reasons.
+  errorReason: z.enum(['timeout', 'unreachable', 'empty-upload', 'not-found', 'needs-reconnect', 'engine-error']).optional(),
   // Detected tech stack of a deep-scanned repo (client-readable, non-secret) —
   // drives "connect Supabase for a deeper scan" / Firebase-rules-not-in-repo hints.
   stack: z
@@ -85,6 +89,7 @@ export const ScanDocSchema = z.object({
     .optional(),
 });
 export type ScanDoc = z.infer<typeof ScanDocSchema>;
+export type ScanErrorReason = NonNullable<ScanDoc['errorReason']>;
 
 /** The job payload carried by the queue. */
 export interface ScanJob {
