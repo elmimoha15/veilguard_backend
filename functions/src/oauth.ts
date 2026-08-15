@@ -130,17 +130,31 @@ export async function handleGitHubCallback(query: Record<string, unknown>): Prom
   if (!Number.isFinite(installationId)) return back('error=no_installation');
 
   try {
-    const repo = await firstInstallationRepo(installationId);
+    // Resolve the installation's default repo. A brand-new user may have granted
+    // access to NO repositories yet (empty account, or "select repositories" with
+    // none picked). That's not a failure — connect them anyway and let the app
+    // guide them to push code when they try to scan. Only a real error (bad token,
+    // permissions, GitHub down) is a github_failed.
+    let repo: string | undefined;
+    try {
+      repo = await firstInstallationRepo(installationId);
+    } catch (e) {
+      if (!(e instanceof Error && e.message.includes('not granted any repository'))) throw e;
+      repo = undefined; // connected with no repos yet
+    }
     const secret: GitHubSecret = { mock: false, installationId, repo };
     const meta: Omit<GitHubConnectionMeta, 'connectedAt'> = {
-      repo,
+      repo, // omitted by Firestore (ignoreUndefinedProperties) when there are no repos
       scopes: ['contents:read', 'metadata:read'],
       writeAccess: false,
       mock: false,
     };
     await setConnection(st.uid, 'github', meta, encryptJson(secret));
     return back('connected=github');
-  } catch {
+  } catch (e) {
+    // Log the real reason (token mint / repo listing / storage) — otherwise the
+    // client only ever sees a generic github_failed and it's undiagnosable.
+    console.error('[oauth] github callback failed:', e instanceof Error ? e.message : e);
     return back('error=github_failed');
   }
 }

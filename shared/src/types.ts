@@ -161,7 +161,9 @@ export type Provider = 'github' | 'supabase';
 
 /** Non-secret connection metadata stored (client-readable) under users/{uid}.connections. */
 export interface GitHubConnectionMeta {
-  repo: string;
+  // The installation's default repo. ABSENT when the user connected but granted
+  // access to no repositories yet (they get connected + guided to push code).
+  repo?: string;
   scopes: string[];
   writeAccess: false;
   mock: boolean;
@@ -182,7 +184,7 @@ export interface SupabaseConnectionMeta {
 }
 
 /** Decrypted credential payloads (only ever in memory server-side). */
-export type GitHubSecret = { mock: true; repoPath: string } | { mock: false; installationId: number; repo: string };
+export type GitHubSecret = { mock: true; repoPath: string } | { mock: false; installationId: number; repo?: string };
 export type SupabaseSecret =
   // Legacy MOCK path (POST /connectSupabase { policiesPath }) — points at a fixture.
   | { mode: 'mock-path'; policiesPath: string }
