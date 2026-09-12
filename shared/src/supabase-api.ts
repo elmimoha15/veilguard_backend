@@ -142,6 +142,12 @@ export async function firstProject(accessToken: string): Promise<ProjectInfo> {
 
 /** Run one read-only SQL statement via the Management API query endpoint. */
 async function runReadOnlyQuery(accessToken: string, projectRef: string, query: string): Promise<Record<string, unknown>[]> {
+  // Guard against SSRF: projectRef is interpolated into the request URL, so reject
+  // anything but the safe ref charset (letters, digits, hyphens, underscores)
+  // before it can smuggle a path/host into the fetch.
+  if (!/^[A-Za-z0-9_-]+$/.test(projectRef)) {
+    throw new Error('invalid Supabase project ref');
+  }
   const res = await fetch(`${API}/v1/projects/${projectRef}/database/query`, {
     method: 'POST',
     headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },

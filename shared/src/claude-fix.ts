@@ -45,6 +45,16 @@ export interface FixInput {
  */
 export class AiFixUnavailableError extends Error {}
 
+/**
+ * Per-scan token accounting. The worker runs one scan per instance
+ * (--concurrency 1), so a module-level accumulator is safe: reset it before a
+ * scan's AI pass and read it after. Every Claude call adds its usage here.
+ */
+export interface AiUsage { inputTokens: number; outputTokens: number; calls: number }
+let aiUsageAcc: AiUsage = { inputTokens: 0, outputTokens: 0, calls: 0 };
+export function resetAiUsage(): void { aiUsageAcc = { inputTokens: 0, outputTokens: 0, calls: 0 }; }
+export function getAiUsage(): AiUsage { return { ...aiUsageAcc }; }
+
 let client: Anthropic | null = null;
 function getClient(): Anthropic | null {
   if (!config.aiFixEnabled) return null;
@@ -153,6 +163,10 @@ async function rawText(model: string, system: string, user: string, maxTokens = 
     // Any API/transport error is account-level for this scan — signal "stop".
     throw new AiFixUnavailableError(e instanceof Error ? e.message : String(e));
   }
+  // Record token usage for the per-scan cost estimate.
+  aiUsageAcc.calls += 1;
+  aiUsageAcc.inputTokens += resp.usage?.input_tokens ?? 0;
+  aiUsageAcc.outputTokens += resp.usage?.output_tokens ?? 0;
   return resp.content
     .filter((b): b is Anthropic.TextBlock => b.type === 'text')
     .map((b) => b.text)

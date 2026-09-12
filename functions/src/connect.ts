@@ -3,6 +3,7 @@ import { config } from '../../shared/src/config.js';
 import { encryptJson, decryptJson } from '../../shared/src/crypto.js';
 import { setConnection, deleteConnection, getEncryptedSecret } from '../../shared/src/firestore.js';
 import { revokeToken } from '../../shared/src/supabase-api.js';
+import { uninstallInstallation } from '../../shared/src/github-app.js';
 import type { GitHubSecret, SupabaseSecret, Provider } from '../../shared/src/types.js';
 import { requireAuth, AuthError } from './auth.js';
 import { requirePaid } from './plan-gate.js';
@@ -93,9 +94,10 @@ export async function handleDisconnect(rawBody: unknown, authHeader: string | un
     if (provider !== 'github' && provider !== 'supabase') {
       return { status: 400, body: { error: 'provider must be "github" or "supabase"' } };
     }
-    // Best-effort upstream revoke for Supabase OAuth tokens BEFORE we delete our
-    // encrypted copy. Never blocks the local delete (which is the source of truth).
+    // Best-effort upstream cleanup BEFORE we delete our encrypted copy. Never
+    // blocks the local delete (our stored connection is the source of truth).
     if (provider === 'supabase') {
+      // Revoke the Supabase OAuth token upstream.
       try {
         const blob = await getEncryptedSecret(uid, 'supabase');
         if (blob) {
@@ -104,6 +106,20 @@ export async function handleDisconnect(rawBody: unknown, authHeader: string | un
         }
       } catch {
         /* ignore — we still delete the local credential below */
+      }
+    } else if (provider === 'github') {
+      // Uninstall the GitHub App from THIS user's account (their stored
+      // installation_id only), so disconnect also removes it from their GitHub —
+      // not just our side. 404/already-gone is fine; a real failure is logged and
+      // we still proceed to clean up locally.
+      try {
+        const blob = await getEncryptedSecret(uid, 'github');
+        if (blob) {
+          const s = decryptJson<GitHubSecret>(blob);
+          if (!s.mock && s.installationId) await uninstallInstallation(s.installationId);
+        }
+      } catch (e) {
+        console.error('[disconnect] github uninstall failed (cleaning up locally anyway):', e instanceof Error ? e.message : e);
       }
     }
     await deleteConnection(uid, provider);

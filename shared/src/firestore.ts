@@ -87,12 +87,19 @@ export async function createDeepScanDoc(
  * source has already been staged (see StagingStore); the worker extracts it into
  * an ephemeral workspace and wipes it after the scan — nothing is persisted here.
  */
+/** A fresh Firestore-style scan id generated WITHOUT creating the doc — used to
+ *  name the staged upload object before the doc exists (session → upload → finalize). */
+export function newScanId(): string {
+  return getDb().collection('scans').doc().id;
+}
+
 export async function createUploadScanDoc(
   uid: string,
   info: { name: string },
   extra: Partial<Pick<ScanDoc, 'origin' | 'appId'>> = {},
+  id?: string,
 ): Promise<string> {
-  const ref = getDb().collection('scans').doc();
+  const ref = id ? getDb().collection('scans').doc(id) : getDb().collection('scans').doc();
   const doc: ScanDoc = {
     id: ref.id,
     target: { type: 'repo', value: `upload:${info.name}` },

@@ -1,7 +1,7 @@
 import * as React from 'react';
-import { Section, Row, Column, Text, Hr } from '@react-email/components';
+import { Text } from '@react-email/components';
 import { Layout, Btn, Heading, Paragraph } from './components.js';
-import { BRAND, gradeColor, severityColor } from './brand.js';
+import { BRAND } from './brand.js';
 
 export interface AlertFinding {
   severity: string;
@@ -19,69 +19,31 @@ export interface SecurityAlertProps {
   unsubscribeUrl?: string;
 }
 
-/** The security-alert email — the most important one. Calm, specific, actionable. */
+/** The security-alert email — the most important one. Plain, specific, actionable. */
 export function SecurityAlert({ appName, findings, gradeBefore, gradeAfter, viewUrl, unsubscribeUrl }: SecurityAlertProps) {
   const count = findings.length;
   const gradeChanged = !!gradeBefore && !!gradeAfter && gradeBefore !== gradeAfter;
   return (
     <Layout preview={`New security issue on ${appName}`} unsubscribeUrl={unsubscribeUrl}>
       <Heading>New security {count === 1 ? 'issue' : 'issues'} on {appName}</Heading>
-      <Paragraph muted>
-        We re-scanned <strong style={{ color: BRAND.text }}>{appName}</strong> after your latest change and found{' '}
-        {count === 1 ? 'a new issue' : `${count} new issues`} that {count === 1 ? "wasn't" : "weren't"} there before.
+      <Paragraph>
+        We re-scanned {appName} after your latest change and found {count === 1 ? 'a new issue' : `${count} new issues`} that {count === 1 ? "wasn't" : "weren't"} there before.
+        {gradeChanged ? ` Your grade went from ${gradeBefore} to ${gradeAfter}.` : ''}
       </Paragraph>
 
-      {gradeChanged && (
-        <Section style={{ margin: '0 0 20px' }}>
-          <Row>
-            <Column style={{ width: '110px' }}>
-              <Text style={{ fontSize: '12px', color: BRAND.label, margin: '0 0 4px', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Grade</Text>
-              <Text style={{ margin: 0, fontSize: '20px', fontWeight: 800 }}>
-                <span style={{ color: gradeColor(gradeBefore) }}>{gradeBefore}</span>
-                <span style={{ color: BRAND.label }}> → </span>
-                <span style={{ color: gradeColor(gradeAfter) }}>{gradeAfter}</span>
-              </Text>
-            </Column>
-          </Row>
-        </Section>
-      )}
+      {findings.map((f, i) => (
+        <Text key={i} style={{ fontSize: '15px', lineHeight: '1.6', color: BRAND.text, margin: '0 0 14px' }}>
+          {count > 1 ? `${i + 1}. ` : ''}
+          <strong>{f.severity.charAt(0).toUpperCase() + f.severity.slice(1).toLowerCase()} — {f.title}.</strong>
+          {f.whyItMatters ? ` ${f.whyItMatters}` : ''}
+          {f.where ? ` (${f.where})` : ''}
+        </Text>
+      ))}
 
-      <Section style={{ border: `1px solid ${BRAND.border}`, borderRadius: '12px', overflow: 'hidden' }}>
-        {findings.map((f, i) => {
-          const color = severityColor(f.severity);
-          return (
-            <Section key={i} style={{ padding: '14px 16px', borderTop: i === 0 ? 'none' : `1px solid ${BRAND.border}` }}>
-              <Text
-                style={{
-                  display: 'inline-block',
-                  fontSize: '11px',
-                  fontWeight: 700,
-                  letterSpacing: '0.06em',
-                  textTransform: 'uppercase',
-                  color,
-                  backgroundColor: `${color}22`,
-                  padding: '3px 9px',
-                  borderRadius: '999px',
-                  margin: '0 0 6px',
-                }}
-              >
-                {f.severity}
-              </Text>
-              <Text style={{ fontSize: '15px', fontWeight: 700, color: BRAND.ink, margin: '0 0 3px' }}>{f.title}</Text>
-              {f.whyItMatters ? <Text style={{ fontSize: '13.5px', lineHeight: '1.55', color: BRAND.muted, margin: 0 }}>{f.whyItMatters}</Text> : null}
-              {f.where ? <Text style={{ fontSize: '12px', color: BRAND.label, margin: '4px 0 0', fontFamily: 'monospace' }}>{f.where}</Text> : null}
-            </Section>
-          );
-        })}
-      </Section>
+      <Btn href={viewUrl}>View the fix</Btn>
 
-      <Section style={{ textAlign: 'center', padding: '24px 0 8px' }}>
-        <Btn href={viewUrl}>View in Veilguard</Btn>
-      </Section>
-
-      <Hr style={{ borderColor: BRAND.border, margin: '8px 0 16px' }} />
       <Paragraph muted>
-        Nothing to panic about — we caught it early and the exact fix is waiting for you in the dashboard.
+        Nothing to panic about, we caught it early and the exact fix is waiting for you in the dashboard.
       </Paragraph>
     </Layout>
   );

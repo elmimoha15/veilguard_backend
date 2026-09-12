@@ -86,7 +86,7 @@ export async function runScanJob(job: ScanJob): Promise<void> {
   let completed = false;
 
   try {
-    let result: { grade: Grade; score: number; counts: Counts; stack?: { supabase?: boolean; firebase?: boolean; firebaseRulesInRepo?: boolean } };
+    let result: { grade: Grade; score: number; counts: Counts; stack?: { supabase?: boolean; firebase?: boolean; firebaseRulesInRepo?: boolean }; aiUsage?: { model: string; calls: number; inputTokens: number; outputTokens: number; estCostUsd: number } };
 
     if (doc.type === 'deep') {
       if (!doc.ownerUid) throw new Error('deep scan requires an owner');
@@ -125,6 +125,7 @@ export async function runScanJob(job: ScanJob): Promise<void> {
       score: result.score,
       counts: result.counts,
       ...(result.stack ? { stack: result.stack } : {}),
+      ...(result.aiUsage ? { aiUsage: result.aiUsage } : {}),
       ...finishedFields(),
     });
     console.log(`[worker] runScan: ${scanId} done — grade ${result.grade}, ${result.counts.critical} critical`);

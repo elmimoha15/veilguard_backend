@@ -6,7 +6,7 @@ import { Layout, Btn, Heading, Paragraph } from './components.js';
 export function Welcome({ ctaUrl }: { ctaUrl: string }) {
   return (
     <Layout preview="Welcome to Veilguard — let's find the holes before attackers do">
-      <Heading>Welcome to Veilguard 👋</Heading>
+      <Heading>Welcome to Veilguard</Heading>
       <Paragraph>
         Your AI built your app fast — and quietly left a few doors unlocked. Veilguard checks for the
         common ones (leaked keys, open databases, missing auth, injection) and hands you the exact fix,
@@ -69,7 +69,7 @@ export function AccountDeleted() {
 export function GuardActivated({ ctaUrl }: { ctaUrl: string }) {
   return (
     <Layout preview="You're on Veilguard Guard — everything's unlocked">
-      <Heading>You're on Guard 🛡️</Heading>
+      <Heading>You're on Guard</Heading>
       <Paragraph>
         Your subscription is active. Every fix is unlocked (copy-paste code + AI prompts), and you can now
         run GitHub repo scans, upload folders, and turn on continuous monitoring so we re-check your app

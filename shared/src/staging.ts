@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { config } from './config.js';
@@ -14,6 +14,17 @@ export interface StagingStore {
   put(id: string, bytes: Uint8Array): Promise<void>;
   get(id: string): Promise<Buffer>;
   delete(id: string): Promise<void>;
+  /**
+   * Mint an upload URL the BROWSER writes the zip to directly (bypassing our API,
+   * so uploads aren't bounded by Cloud Run's ~32MB request cap). Prod → a GCS
+   * resumable-session URI; local → a relative `/uploadBytes` path the dev server
+   * writes to local FS. `origin` is the browser origin (for the GCS CORS grant).
+   */
+  createUploadSession(id: string, origin: string): Promise<string>;
+  /** First `bytes` of the staged object (for a cheap zip magic-byte check). Throws if missing. */
+  head(id: string, bytes: number): Promise<Buffer>;
+  /** Size in bytes of the staged object. Throws if missing. */
+  size(id: string): Promise<number>;
 }
 
 /**
@@ -40,6 +51,18 @@ export class LocalFsStaging implements StagingStore {
     } catch {
       /* best-effort */
     }
+  }
+  // Local dev has no GCS: the browser PUTs the zip to the dev server, which
+  // writes it to local FS. Relative path → the frontend resolves it against its
+  // configured API base.
+  async createUploadSession(id: string): Promise<string> {
+    return `/uploadBytes?scanId=${encodeURIComponent(id)}`;
+  }
+  async head(id: string, bytes: number): Promise<Buffer> {
+    return readFileSync(this.path(id)).subarray(0, bytes);
+  }
+  async size(id: string): Promise<number> {
+    return statSync(this.path(id)).size;
   }
 }
 
@@ -71,6 +94,24 @@ export class GcsStaging implements StagingStore {
     } catch {
       /* best-effort */
     }
+  }
+  async createUploadSession(id: string, origin: string): Promise<string> {
+    const obj = await this.object(id);
+    const [uri] = await obj.createResumableUpload({
+      metadata: { contentType: 'application/zip' },
+      origin,
+    });
+    return uri;
+  }
+  async head(id: string, bytes: number): Promise<Buffer> {
+    const obj = await this.object(id);
+    const [buf] = await obj.download({ start: 0, end: bytes - 1 });
+    return buf;
+  }
+  async size(id: string): Promise<number> {
+    const obj = await this.object(id);
+    const [meta] = await obj.getMetadata();
+    return Number(meta.size ?? 0);
   }
 }
 

@@ -84,6 +84,11 @@ export const ScanDocSchema = z.object({
   stack: z
     .object({ supabase: z.boolean().optional(), firebase: z.boolean().optional(), firebaseRulesInRepo: z.boolean().optional() })
     .optional(),
+  // Claude usage for this scan's AI-tailored fixes (deep/upload only) — token
+  // counts + an estimated USD cost, surfaced to the user for cost transparency.
+  aiUsage: z
+    .object({ model: z.string(), calls: z.number().int(), inputTokens: z.number().int(), outputTokens: z.number().int(), estCostUsd: z.number() })
+    .optional(),
   createdAt: z.string(),
   startedAt: z.string().optional(),
   finishedAt: z.string().optional(),

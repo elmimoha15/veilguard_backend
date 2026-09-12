@@ -76,6 +76,28 @@ export async function underAiFixCap(uid: string, now = Date.now()): Promise<bool
   return (await getClaudeUsage(uid, now)).claudeCallsThisMonth < config.aiFixMaxPerMonth;
 }
 
+/** Accumulate a scan's Claude token usage + estimated cost into the monthly total,
+ *  so the user can see how much AI they've used. Merges into the same usage doc. */
+export async function bumpClaudeTokens(uid: string, inTok: number, outTok: number, costUsd: number, now = Date.now()): Promise<void> {
+  if (inTok <= 0 && outTok <= 0) return;
+  const ref = usageRef(uid);
+  await getDb().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const d = (snap.exists ? snap.data() : {}) as Record<string, unknown>;
+    const reset = !d.monthResetAt || new Date(d.monthResetAt as string).getTime() <= now;
+    const monthResetAt = reset ? new Date(now + THIRTY_DAYS_MS).toISOString() : (d.monthResetAt as string);
+    const inBase = reset ? 0 : Number(d.aiInputTokensThisMonth ?? 0);
+    const outBase = reset ? 0 : Number(d.aiOutputTokensThisMonth ?? 0);
+    const costBase = reset ? 0 : Number(d.aiCostThisMonthUsd ?? 0);
+    tx.set(ref, {
+      aiInputTokensThisMonth: inBase + inTok,
+      aiOutputTokensThisMonth: outBase + outTok,
+      aiCostThisMonthUsd: +(costBase + costUsd).toFixed(6),
+      monthResetAt,
+    }, { merge: true });
+  });
+}
+
 /** Count one Claude fix-generation API call (cache hits must NOT call this). */
 export async function bumpClaudeCall(uid: string, now = Date.now()): Promise<void> {
   const ref = usageRef(uid);

@@ -35,13 +35,29 @@ function zipDir(root: string): Uint8Array {
   return zipSync(files);
 }
 
+/** Full upload flow: session → PUT bytes → finalize. Mirrors the browser
+ *  (browser→GCS direct in prod; here the local dev server writes to LocalFsStaging).
+ *  Returns the response of whichever step first fails, else the finalize 202. */
 async function postZip(zip: Uint8Array, token: string | undefined, name = 'proj') {
-  const res = await fetch(`${baseUrl}/createUploadScan?name=${encodeURIComponent(name)}`, {
+  return uploadBytes(Buffer.from(zip), token, name);
+}
+async function uploadBytes(body: Buffer, token: string | undefined, name = 'proj') {
+  const auth = token ? { authorization: `Bearer ${token}` } : {};
+  const s = await fetch(`${baseUrl}/createUploadSession`, {
     method: 'POST',
-    headers: { 'content-type': 'application/zip', ...(token ? { authorization: `Bearer ${token}` } : {}) },
-    body: Buffer.from(zip),
+    headers: { 'content-type': 'application/json', ...auth },
+    body: JSON.stringify({ name }),
   });
-  return { status: res.status, body: (await res.json().catch(() => ({}))) as any };
+  const sBody = (await s.json().catch(() => ({}))) as any;
+  if (!s.ok) return { status: s.status, body: sBody };
+  const putUrl = (sBody.uploadUrl as string).startsWith('http') ? sBody.uploadUrl : `${baseUrl}${sBody.uploadUrl}`;
+  await fetch(putUrl, { method: 'PUT', headers: { 'content-type': 'application/zip' }, body });
+  const f = await fetch(`${baseUrl}/finalizeUploadScan`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...auth },
+    body: JSON.stringify({ scanId: sBody.scanId, name }),
+  });
+  return { status: f.status, body: (await f.json().catch(() => ({}))) as any };
 }
 
 /** Ensure the user doc exists, then make them Pro (only the server may do this). */
@@ -89,23 +105,19 @@ describe('safeUnzip — extraction guards (pure)', () => {
   });
 });
 
-describe('POST /createUploadScan', () => {
-  it('free plan is rejected (402 Pro-only)', async () => {
+describe('upload scan (session → upload → finalize)', () => {
+  it('free plan is rejected (402 Pro-only) at the session step', async () => {
     const a = await authedClient(email(), 'password123');
     const r = await postZip(zipDir(QUICKCART_PATH), a.token);
     expect(r.status).toBe(402);
     await a.close();
   });
 
-  it('a non-zip body is rejected (400)', async () => {
+  it('a non-zip upload is rejected (400) at finalize', async () => {
     const a = await authedClient(email(), 'password123');
     await makePaid(a.token, a.uid);
-    const res = await fetch(`${baseUrl}/createUploadScan?name=x`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/zip', authorization: `Bearer ${a.token}` },
-      body: Buffer.from('not a zip'),
-    });
-    expect(res.status).toBe(400);
+    const r = await uploadBytes(Buffer.from('not a zip'), a.token, 'x');
+    expect(r.status).toBe(400);
     await a.close();
   });
 

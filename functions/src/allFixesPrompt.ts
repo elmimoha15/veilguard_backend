@@ -1,7 +1,4 @@
 import { getScan, listFindingDocs, readPrivateFix, type PublicFinding } from '../../shared/src/firestore.js';
-import { generateCombinedPrompt, AiFixUnavailableError } from '../../shared/src/claude-fix.js';
-import { underAiFixCap, bumpClaudeCall } from '../../shared/src/usage.js';
-import { config } from '../../shared/src/config.js';
 import { requireAuth, AuthError } from './auth.js';
 import { requirePaid } from './plan-gate.js';
 import type { HttpResult } from './createScan.js';
@@ -33,11 +30,10 @@ function composeFallback(items: FixItem[]): string {
 }
 
 /**
- * POST /allFixesPrompt { scanId } — GUARD-only. Assemble every finding's fix for
- * a scan into ONE organized master prompt the user pastes into their AI coding
- * tool to apply everything at once. Claude synthesizes the prompt; if AI is
- * disabled or over the monthly cap, a deterministic concatenation is returned so
- * the feature always works. Ownership + paid gated.
+ * POST /allFixesPrompt { scanId } — GUARD-only. Assemble every finding's already-
+ * tailored fix for a scan into ONE organized master prompt the user pastes into
+ * their AI coding tool to apply everything at once. Deterministic (no Claude call)
+ * so it's instant and free. Ownership + paid gated.
  */
 export async function handleAllFixesPrompt(scanId: string | undefined, authHeader: string | undefined): Promise<HttpResult> {
   if (!scanId) return { status: 400, body: { error: 'scanId is required' } };
@@ -69,20 +65,8 @@ export async function handleAllFixesPrompt(scanId: string | undefined, authHeade
   if (items.length === 0) return { status: 404, body: { error: 'no fixes available for this scan yet' } };
   items.sort((a, b) => (SEV_RANK[b.severity] ?? 0) - (SEV_RANK[a.severity] ?? 0));
 
-  // Prefer a Claude-composed prompt; fall back to a deterministic one.
-  if (config.aiFixEnabled && (await underAiFixCap(uid))) {
-    try {
-      const composed = await generateCombinedPrompt(items);
-      if (composed) {
-        await bumpClaudeCall(uid);
-        return { status: 200, body: { prompt: composed, count: items.length } };
-      }
-    } catch (e) {
-      if (!(e instanceof AiFixUnavailableError)) {
-        console.error('[allFixesPrompt] compose failed:', e instanceof Error ? e.message : e);
-      }
-      // fall through to deterministic
-    }
-  }
+  // Bundle the already-tailored per-finding fixes deterministically — NO Claude
+  // call. Each fix was already Haiku-generated at scan time, so this is instant,
+  // free, and repeatable (was previously a live Sonnet call on every click).
   return { status: 200, body: { prompt: composeFallback(items), count: items.length } };
 }

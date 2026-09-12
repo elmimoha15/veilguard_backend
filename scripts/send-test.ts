@@ -20,6 +20,7 @@ import {
   sendGuardActivated,
   sendPaymentFailed,
   sendSubscriptionCanceled,
+  sendMonthlySummary,
 } from '../shared/src/emails/senders.js';
 import { config } from '../shared/src/config.js';
 
@@ -62,6 +63,18 @@ const steps: { name: string; run: () => Promise<void> }[] = [
       body: 'We added folder-upload scans and push-triggered monitoring.\n\nWhenever you ship, we re-scan and email you the moment a new hole appears — with the exact fix.',
       ctaText: "See what's new",
       ctaUrl: base,
+    }),
+  },
+  {
+    name: 'monthly-summary',
+    run: () => sendMonthlySummary({
+      to,
+      apps: [
+        { name: 'fox-on-the-go', grade: 'B', openIssues: 1, fixedThisMonth: 3 },
+        { name: 'quik-threads', grade: 'D', openIssues: 4, fixedThisMonth: 0 },
+      ],
+      scansUsed: 12,
+      scanLimit: 50,
     }),
   },
 ];

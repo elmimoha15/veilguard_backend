@@ -68,13 +68,20 @@ export const config = {
     if (v === '1' || v === 'true' || v === 'on') return true;
     return this.usingEmulator;
   },
-  // Ephemeral workspace caps for deep scans.
-  deepScanMaxBytes: num('DEEP_SCAN_MAX_BYTES', 200 * 1024 * 1024), // 200MB
+  // Ephemeral workspace caps for deep scans. `deepScanMaxBytes` bounds how much
+  // of an UPLOAD we EXTRACT into memory (worker /tmp is RAM on Cloud Run), so it
+  // stays modest. `deepScanMaxWorkspaceBytes` is the separate, larger final
+  // safety cap on a cloned REPO workspace so big repos are allowed (with a UI
+  // "this takes a while" warning) instead of hard-failing.
+  deepScanMaxBytes: num('DEEP_SCAN_MAX_BYTES', 200 * 1024 * 1024), // 200MB (upload extract bound)
+  deepScanMaxWorkspaceBytes: num('DEEP_SCAN_MAX_WORKSPACE_BYTES', 2 * 1024 * 1024 * 1024), // 2GB (repo safety cap)
 
   // --- Upload scans (Pro-only folder/zip upload) ---
-  // Max size of the uploaded .zip accepted by POST /createUploadScan. The
-  // extracted workspace is separately bounded by deepScanMaxBytes.
-  uploadMaxBytes: num('UPLOAD_MAX_BYTES', 40 * 1024 * 1024), // 40MB zip
+  // Uploads go browser→GCS directly (resumable), so this is only a very high
+  // safety ceiling checked at finalize on the staged object's size — NOT a
+  // transfer limit. The extracted workspace is separately bounded by
+  // deepScanMaxBytes above.
+  uploadMaxBytes: num('UPLOAD_MAX_BYTES', 2 * 1024 * 1024 * 1024), // 2GB safety ceiling
   // Max number of entries in an uploaded zip (zip-bomb guard).
   uploadMaxEntries: num('UPLOAD_MAX_ENTRIES', 20_000),
   // GCS bucket used to STAGE an uploaded zip between the API and the worker when
@@ -103,12 +110,14 @@ export const config = {
   // From addresses live on the verified sending domain (veilguard.dev). NOTE:
   // Resend only accepts a From: on the VERIFIED domain itself — the `send.`
   // label in the DNS records is just the SPF return-path, not a sending domain.
-  get alertFromEmail(): string { return process.env.ALERT_FROM_EMAIL || 'Veilguard <alerts@veilguard.dev>'; },
-  get emailFrom(): string { return process.env.EMAIL_FROM || 'Veilguard <hello@veilguard.dev>'; },
-  get marketingFromEmail(): string { return process.env.EMAIL_MARKETING_FROM || 'Veilguard <news@veilguard.dev>'; },
-  get emailReplyTo(): string { return process.env.EMAIL_REPLY_TO || 'support@veilguard.dev'; },
+  // Every Veilguard email — alerts, transactional, marketing — sends from the one
+  // info@ mailbox, and replies route back to that same Google Workspace inbox.
+  get alertFromEmail(): string { return process.env.ALERT_FROM_EMAIL || 'Veilguard <info@veilguard.dev>'; },
+  get emailFrom(): string { return process.env.EMAIL_FROM || 'Veilguard <info@veilguard.dev>'; },
+  get marketingFromEmail(): string { return process.env.EMAIL_MARKETING_FROM || 'Veilguard <info@veilguard.dev>'; },
+  get emailReplyTo(): string { return process.env.EMAIL_REPLY_TO || 'info@veilguard.dev'; },
   // Inbox that receives user feedback/help submissions (owner-facing).
-  get supportEmail(): string { return process.env.SUPPORT_EMAIL || 'support@veilguard.dev'; },
+  get supportEmail(): string { return process.env.SUPPORT_EMAIL || 'info@veilguard.dev'; },
   // Base URL the app is served from — used in email links + Admin action-code URLs.
   get appBaseUrl(): string { return process.env.APP_BASE_URL || this.frontendUrl || 'https://veilguard.dev'; },
 
@@ -186,8 +195,14 @@ export const config = {
   // fixes ship), so no key means no behavior change and no network in tests.
   get anthropicApiKey(): string { return process.env.ANTHROPIC_API_KEY || ''; },
   get aiFixEnabled(): boolean { return !!this.anthropicApiKey; },
-  // Cheap/fast default; escalate to a stronger model only when the cheap one's
-  // output fails validation (see claude-fix.ts).
+  // Haiku only — cheap + fast. The escalation model defaults to the SAME model as
+  // the primary, which disables Sonnet escalation (the `!==` guards in
+  // claude-fix.ts become false): on a bad Haiku output we simply keep the canned
+  // fix instead of paying for a stronger model. Override the env vars to re-enable.
   aiFixModel: process.env.AI_FIX_MODEL || 'claude-haiku-4-5',
-  aiFixEscalateModel: process.env.AI_FIX_ESCALATE_MODEL || 'claude-sonnet-5',
+  aiFixEscalateModel: process.env.AI_FIX_ESCALATE_MODEL || 'claude-haiku-4-5',
+  // Approximate Haiku pricing (USD per 1M tokens) for the per-scan cost ESTIMATE
+  // shown to users — tune via env; verify against console.anthropic.com.
+  get aiPriceInPerMTok(): number { return num('AI_PRICE_IN_PER_MTOK', 1.0); },
+  get aiPriceOutPerMTok(): number { return num('AI_PRICE_OUT_PER_MTOK', 5.0); },
 } as const;

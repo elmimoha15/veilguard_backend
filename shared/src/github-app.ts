@@ -50,6 +50,22 @@ export async function installationToken(installationId: number): Promise<string>
   return json.token;
 }
 
+/**
+ * Uninstall the GitHub App from the account that granted `installationId`, so a
+ * Veilguard "Disconnect" also removes the app from the user's GitHub (not just
+ * our stored connection). App-level call (App JWT, no user scope). 204 = removed,
+ * 404 = already gone — both are success; anything else throws for the caller to
+ * log. Only ever touches the ONE installation id we pass (that user's).
+ */
+export async function uninstallInstallation(installationId: number): Promise<void> {
+  const res = await fetch(`${GH}/app/installations/${installationId}`, {
+    method: 'DELETE',
+    headers: ghHeaders(`Bearer ${appJwt()}`),
+  });
+  if (res.status === 204 || res.status === 404) return;
+  throw new Error(`GitHub uninstall failed: ${res.status} ${await res.text()}`);
+}
+
 /** The first repository the installation was granted (owner/name). */
 export async function firstInstallationRepo(installationId: number): Promise<string> {
   const token = await installationToken(installationId);
@@ -68,6 +84,8 @@ export interface RepoSummary {
   language?: string;
   pushedAt?: string;
   defaultBranch?: string;
+  /** Repo size in KB (from GitHub) — lets the UI warn that a big repo takes a while. */
+  sizeKb?: number;
 }
 
 /**
@@ -85,7 +103,7 @@ export async function listInstallationRepos(installationId: number, maxRepos = 3
     });
     if (!res.ok) throw new Error(`GitHub list repos failed: ${res.status}`);
     const json = (await res.json()) as {
-      repositories?: { full_name: string; private: boolean; language?: string | null; pushed_at?: string; default_branch?: string }[];
+      repositories?: { full_name: string; private: boolean; language?: string | null; pushed_at?: string; default_branch?: string; size?: number }[];
     };
     const batch = json.repositories ?? [];
     for (const r of batch) {
@@ -95,6 +113,7 @@ export async function listInstallationRepos(installationId: number, maxRepos = 3
         language: r.language ?? undefined,
         pushedAt: r.pushed_at,
         defaultBranch: r.default_branch,
+        sizeKb: typeof r.size === 'number' ? r.size : undefined,
       });
     }
     if (batch.length < perPage) break; // last page

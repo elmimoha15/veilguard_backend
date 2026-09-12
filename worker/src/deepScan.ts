@@ -16,8 +16,8 @@ import {
   updateEncryptedSecret,
   patchConnectionMeta,
 } from '../../shared/src/firestore.js';
-import { generateFix, fixCacheKey, readFixCache, writeFixCache, AiFixUnavailableError } from '../../shared/src/claude-fix.js';
-import { underAiFixCap, bumpClaudeCall } from '../../shared/src/usage.js';
+import { generateFix, fixCacheKey, readFixCache, writeFixCache, AiFixUnavailableError, resetAiUsage, getAiUsage } from '../../shared/src/claude-fix.js';
+import { underAiFixCap, bumpClaudeCall, bumpClaudeTokens } from '../../shared/src/usage.js';
 import type { ScanDoc, GitHubSecret, SupabaseSecret } from '../../shared/src/types.js';
 
 /** Thrown when a Supabase token can't be refreshed — the user must reconnect. */
@@ -110,6 +110,7 @@ export async function buildDeepWorkspace(scanId: string, uid: string, doc: ScanD
   }
 
   if (doc.sources?.supabase) {
+   try {
     const blob = await getEncryptedSecret(uid, 'supabase');
     if (!blob) throw new Error('supabase not connected');
     const secret = decryptJson<SupabaseSecret>(blob);
@@ -145,11 +146,22 @@ export async function buildDeepWorkspace(scanId: string, uid: string, doc: ScanD
       // A successful fetch means the connection is healthy again.
       await patchConnectionMeta(uid, 'supabase', { needsReconnect: false });
     }
+   } catch (e) {
+    // A Supabase connection problem (403 / expired / revoked / missing secret) must
+    // NEVER fail the code scan. Skip the live DB enrichment — the repo's own .sql
+    // migrations are still analyzed — and flag the connection so the UI prompts a
+    // reconnect. The whole code scan then completes normally.
+    console.error(`[deepScan] supabase enrichment skipped for ${uid}: ${e instanceof Error ? e.message : String(e)}`);
+    await patchConnectionMeta(uid, 'supabase', { needsReconnect: true }).catch(() => {});
+   }
   }
 
-  // Size cap so a giant repo can't hang / exhaust memory.
-  if (dirSize(ws) > config.deepScanMaxBytes) {
-    throw new Error(`workspace exceeds size cap (${config.deepScanMaxBytes} bytes)`);
+  // Final safety cap so a pathologically huge repo can't OOM the worker. Set high
+  // (deepScanMaxWorkspaceBytes, 2GB) so ordinary big repos are ALLOWED — the UI
+  // warns the user up-front that a large repo takes a while — and only a truly
+  // enormous clone fails here with a clear error.
+  if (dirSize(ws) > config.deepScanMaxWorkspaceBytes) {
+    throw new Error(`workspace exceeds size cap (${config.deepScanMaxWorkspaceBytes} bytes)`);
   }
   return { ws, anonReadable };
 }
@@ -223,12 +235,14 @@ function detectStack(repo: { files: string[]; packageManifest: { allDeps?: Recor
   return stack;
 }
 
+export interface AiUsageSummary { model: string; calls: number; inputTokens: number; outputTokens: number; estCostUsd: number }
+
 export async function runDeepEngine(
   scanId: string,
   workspace: string,
   doc: ScanDoc,
   anonReadable: string[] = [],
-): Promise<{ grade: Grade; score: number; counts: Counts; stack: DetectedStack }> {
+): Promise<{ grade: Grade; score: number; counts: Counts; stack: DetectedStack; aiUsage?: AiUsageSummary }> {
   const all: Finding[] = [];
   const onFinding = (f: Finding) => {
     all.push(f);
@@ -266,9 +280,20 @@ export async function runDeepEngine(
   // Slice 8: replace the canned fix with a Claude-tailored one for the top
   // findings, while the source workspace is still on disk. Best-effort — never
   // fails the scan. Deep scans are Guard-only, so this is inherently paid-only.
-  await enhanceWithAiFixes(scanId, workspace, uniq, doc.ownerUid ?? undefined);
+  const usage = await enhanceWithAiFixes(scanId, workspace, uniq, doc.ownerUid ?? undefined);
 
-  return { ...grade(uniq), stack };
+  let aiUsage: AiUsageSummary | undefined;
+  if (usage && usage.calls > 0) {
+    const estCostUsd = +(
+      (usage.inputTokens / 1_000_000) * config.aiPriceInPerMTok +
+      (usage.outputTokens / 1_000_000) * config.aiPriceOutPerMTok
+    ).toFixed(6);
+    aiUsage = { model: config.aiFixModel, calls: usage.calls, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, estCostUsd };
+    if (doc.ownerUid) await bumpClaudeTokens(doc.ownerUid, usage.inputTokens, usage.outputTokens, estCostUsd).catch(() => {});
+    console.log(`[claude-fix] scan ${scanId} AI usage: ${usage.calls} calls, ${usage.inputTokens}+${usage.outputTokens} tok, ~$${estCostUsd} (${config.aiFixModel})`);
+  }
+
+  return { ...grade(uniq), stack, aiUsage };
 }
 
 const AI_SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
@@ -312,8 +337,9 @@ function extractSnippet(ws: string, loc: Finding['location']): string | null {
  * hash(ruleId+snippet) so identical/unchanged code reuses one result (no call).
  * Honors the per-scan cap (top-N) and the per-user monthly Claude cap.
  */
-async function enhanceWithAiFixes(scanId: string, ws: string, findings: Finding[], uid: string | undefined): Promise<void> {
-  if (!config.aiFixEnabled || !uid) return;
+async function enhanceWithAiFixes(scanId: string, ws: string, findings: Finding[], uid: string | undefined): Promise<{ inputTokens: number; outputTokens: number; calls: number } | undefined> {
+  if (!config.aiFixEnabled || !uid) return undefined;
+  resetAiUsage(); // start counting this scan's Claude tokens
   const candidates = findings
     .filter((f) => f.location?.file && (f.fix || f.fixPrompt))
     .sort((a, b) => (AI_SEV_RANK[b.severity] ?? 0) - (AI_SEV_RANK[a.severity] ?? 0))
@@ -349,6 +375,7 @@ async function enhanceWithAiFixes(scanId: string, ws: string, findings: Finding[
     }
     if (ai) await writeAiFix(scanId, f, ai);
   }
+  return getAiUsage();
 }
 
 /** A live "anon can read this table" finding from the active RLS probe. */

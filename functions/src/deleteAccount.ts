@@ -3,9 +3,10 @@ import { config } from '../../shared/src/config.js';
 import { decryptJson } from '../../shared/src/crypto.js';
 import { getEncryptedSecret, purgeUserFirestore } from '../../shared/src/firestore.js';
 import { revokeToken } from '../../shared/src/supabase-api.js';
+import { uninstallInstallation } from '../../shared/src/github-app.js';
 import { deletePolarCustomerByExternalId } from '../../shared/src/polar.js';
 import { sendAccountDeleted } from '../../shared/src/emails/senders.js';
-import type { SupabaseSecret } from '../../shared/src/types.js';
+import type { GitHubSecret, SupabaseSecret } from '../../shared/src/types.js';
 import { requireAuth, AuthError } from './auth.js';
 import type { HttpResult } from './createScan.js';
 
@@ -25,7 +26,8 @@ export async function handleDeleteAccount(authHeader: string | undefined): Promi
     throw e;
   }
 
-  // 1) Best-effort revoke the Supabase OAuth token upstream (mirrors handleDisconnect).
+  // 1) Best-effort upstream cleanup of connected providers (mirrors handleDisconnect).
+  //    a) Revoke the Supabase OAuth token.
   try {
     const blob = await getEncryptedSecret(uid, 'supabase');
     if (blob) {
@@ -34,6 +36,18 @@ export async function handleDeleteAccount(authHeader: string | undefined): Promi
     }
   } catch (e) {
     console.error('[deleteAccount] supabase revoke failed (continuing):', e);
+  }
+  //    b) Uninstall the GitHub App from THIS user's account (their stored
+  //       installation only), so deleting the account also removes it from their
+  //       GitHub — same as Disconnect. 404/already-gone is fine.
+  try {
+    const blob = await getEncryptedSecret(uid, 'github');
+    if (blob) {
+      const s = decryptJson<GitHubSecret>(blob);
+      if (!s.mock && s.installationId) await uninstallInstallation(s.installationId);
+    }
+  } catch (e) {
+    console.error('[deleteAccount] github uninstall failed (continuing):', e);
   }
 
   // 2) Delete the Polar customer — cancels any active subscription AND removes

@@ -35,7 +35,12 @@ export async function sendAlert(args: {
       unsubscribeUrl={unsubscribeUrl}
     />,
   );
-  const subject = `⚠️ New security ${args.findings.length === 1 ? 'issue' : 'issues'} in ${args.appName}`;
+  // Plain subject (no emoji) reads as transactional and keeps Gmail from filing it
+  // under Promotions.
+  const subject = `New security ${args.findings.length === 1 ? 'issue' : 'issues'} in ${args.appName}`;
+  // NOTE: a security alert is TRANSACTIONAL, not bulk — so we deliberately do NOT
+  // send a List-Unsubscribe header (that bulk signal pushes Gmail → Promotions).
+  // The in-body "Manage alerts" link (unsubscribeUrl above) still lets users opt out.
   await getEmailTransport().send({
     to: args.to,
     subject,
@@ -43,7 +48,6 @@ export async function sendAlert(args: {
     text,
     from: config.alertFromEmail,
     replyTo: config.emailReplyTo,
-    listUnsubscribe: unsubscribeUrl,
     tags: [{ name: 'type', value: 'alert' }],
     meta: args.meta,
   });

@@ -7,7 +7,7 @@ import { sendWelcome } from '../../shared/src/emails/senders.js';
 import { handleCreateScan } from './createScan.js';
 import { handleClaimScan } from './claimScan.js';
 import { handleCreateDeepScan } from './createDeepScan.js';
-import { handleCreateUploadScan } from './createUploadScan.js';
+import { handleCreateUploadSession, handleFinalizeUploadScan } from './createUploadScan.js';
 import {
   handleCreateCheckout,
   handleBillingPortal,
@@ -60,12 +60,6 @@ export function createApiApp() {
     res.status(r.status).json(r.body);
   });
 
-  // Upload scan: raw .zip body BEFORE express.json (json parser would reject it).
-  app.post('/createUploadScan', express.raw({ type: ['application/zip', 'application/octet-stream'], limit: config.uploadMaxBytes }), async (req: Request, res: Response) => {
-    const r = await handleCreateUploadScan(req.body as Buffer, req.query.name as string | undefined, queue, req.headers.authorization);
-    res.status(r.status).json(r.body);
-  });
-
   // Polar billing webhook: raw body BEFORE express.json (HMAC needs exact bytes).
   app.post('/polarWebhook', express.raw({ type: '*/*', limit: '1mb' }), async (req: Request, res: Response) => {
     const r = await handlePolarWebhook(req.body as Buffer, flattenHeaders(req.headers));
@@ -73,6 +67,17 @@ export function createApiApp() {
   });
 
   app.use(express.json({ limit: '64kb' }));
+
+  // Upload scan (browser→GCS direct): mint a resumable upload URL, then finalize
+  // once the zip is uploaded. Bodies are tiny JSON — the bytes never touch us.
+  app.post('/createUploadSession', async (req: Request, res: Response) => {
+    const r = await handleCreateUploadSession(req.body?.name, req.headers.origin ?? '', req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
+  app.post('/finalizeUploadScan', async (req: Request, res: Response) => {
+    const r = await handleFinalizeUploadScan(req.body?.scanId, req.body?.name, queue, req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
 
   app.post('/createScan', async (req: Request, res: Response) => {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';

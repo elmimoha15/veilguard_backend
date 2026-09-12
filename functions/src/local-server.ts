@@ -9,7 +9,8 @@ import { sendWelcome } from '../../shared/src/emails/senders.js';
 import { handleCreateScan } from './createScan.js';
 import { handleClaimScan } from './claimScan.js';
 import { handleCreateDeepScan } from './createDeepScan.js';
-import { handleCreateUploadScan } from './createUploadScan.js';
+import { handleCreateUploadSession, handleFinalizeUploadScan } from './createUploadScan.js';
+import { makeStaging } from '../../shared/src/staging.js';
 import {
   handleCreateCheckout,
   handleBillingPortal,
@@ -64,10 +65,14 @@ export function createDevServer() {
     res.status(r.status).json(r.body);
   });
 
-  // Upload scan: raw .zip body BEFORE express.json (json parser would reject it).
-  app.post('/createUploadScan', express.raw({ type: ['application/zip', 'application/octet-stream'], limit: config.uploadMaxBytes }), async (req: Request, res: Response) => {
-    const r = await handleCreateUploadScan(req.body as Buffer, req.query.name as string | undefined, queue, req.headers.authorization);
-    res.status(r.status).json(r.body);
+  // Local dev only: the browser PUTs the uploaded zip here (mirrors prod's direct
+  // browser→GCS upload, which local FS staging can't provide). Raw body BEFORE
+  // express.json. Writes to LocalFsStaging under the scanId from createUploadSession.
+  app.put('/uploadBytes', express.raw({ type: ['application/zip', 'application/octet-stream'], limit: config.uploadMaxBytes }), async (req: Request, res: Response) => {
+    const scanId = req.query.scanId as string | undefined;
+    if (!scanId || !Buffer.isBuffer(req.body) || req.body.length === 0) return void res.status(400).json({ error: 'missing scanId or body' });
+    await makeStaging().put(scanId, req.body);
+    res.status(200).json({ ok: true });
   });
 
   // Polar billing webhook: raw body BEFORE express.json (HMAC needs exact bytes).
@@ -77,6 +82,17 @@ export function createDevServer() {
   });
 
   app.use(express.json({ limit: '64kb' }));
+
+  // Upload scan (session → browser upload → finalize). Local upload URL points at
+  // PUT /uploadBytes above; prod points at GCS.
+  app.post('/createUploadSession', async (req: Request, res: Response) => {
+    const r = await handleCreateUploadSession(req.body?.name, req.headers.origin ?? '', req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
+  app.post('/finalizeUploadScan', async (req: Request, res: Response) => {
+    const r = await handleFinalizeUploadScan(req.body?.scanId, req.body?.name, queue, req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
 
   // Config the browser UI needs to reach the Firestore emulator.
   app.get('/dev-config', (_req: Request, res: Response) => {
