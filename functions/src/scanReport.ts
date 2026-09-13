@@ -132,67 +132,106 @@ function pdfToBuffer(build: (doc: PDFKit.PDFDocument) => void): Promise<Buffer> 
   });
 }
 
+const MARGIN = 50;
+function contentWidth(doc: PDFKit.PDFDocument): number { return doc.page.width - MARGIN * 2; }
+
+/** A full-width hairline at the current y (the Veilguard divider), with spacing
+ *  before/after so sections read like the app's hairline-separated lists. */
+function hairline(doc: PDFKit.PDFDocument, gapBefore = 10, gapAfter = 14): void {
+  const y = doc.y + gapBefore;
+  doc.save().moveTo(MARGIN, y).lineTo(doc.page.width - MARGIN, y).lineWidth(0.75).strokeColor(BRAND.border).stroke().restore();
+  doc.y = y + gapAfter;
+}
+/** Start a new page if there isn't at least `needed` px left before the bottom margin. */
+function ensureSpace(doc: PDFKit.PDFDocument, needed: number): void {
+  if (doc.y + needed > doc.page.height - 55) doc.addPage();
+}
+/** Severity → the app's grade-language colors. */
+function sevColor(sev: string): string {
+  const s = sev.toLowerCase();
+  if (s === 'critical' || s === 'high') return '#DC2626';
+  if (s === 'medium') return '#D97706';
+  return BRAND.label;
+}
+
 function header(doc: PDFKit.PDFDocument, subtitle: string): void {
-  doc.rect(0, 0, doc.page.width, 6).fill(BRAND.yellow);
-  doc.fillColor(BRAND.ink).font('Helvetica-Bold').fontSize(20).text('Veilguard', 50, 40);
-  doc.font('Helvetica').fontSize(11).fillColor(BRAND.muted).text(subtitle, 50, 66);
-  doc.moveDown(2);
-  doc.fillColor(BRAND.ink);
+  doc.rect(0, 0, doc.page.width, 4).fill(BRAND.yellow);
+  doc.fillColor(BRAND.ink).font('Helvetica-Bold').fontSize(19).text('Veilguard', MARGIN, 44);
+  doc.font('Helvetica').fontSize(10.5).fillColor(BRAND.muted).text(subtitle, MARGIN, 70, { width: contentWidth(doc) });
+  doc.y = Math.max(doc.y, 90);
+  hairline(doc, 2, 20);
 }
 function fmtDate(iso: string): string { try { return new Date(iso).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }); } catch { return iso; } }
+
+/** A labelled fix/prompt block: a small uppercase label + the body in mono,
+ *  indented, flowing across page breaks (matches the app's fix presentation). */
+function fixBlock(doc: PDFKit.PDFDocument, label: string, body: string): void {
+  doc.moveDown(0.5);
+  doc.font('Helvetica-Bold').fontSize(8.5).fillColor(BRAND.label).text(label.toUpperCase(), MARGIN, doc.y, { characterSpacing: 0.5 });
+  doc.moveDown(0.25);
+  doc.font('Courier').fontSize(9.5).fillColor(BRAND.text).text(body, MARGIN + 12, doc.y, { width: contentWidth(doc) - 12, lineGap: 1.5 });
+}
 
 function renderScanPdf(m: ScanReportModel): Promise<Buffer> {
   return pdfToBuffer((doc) => {
     header(doc, `Security report · ${m.target}`);
-    // Grade + score
-    doc.font('Helvetica-Bold').fontSize(48).fillColor(gradeColor(m.grade)).text(m.grade ?? '—', { continued: false });
-    doc.font('Helvetica').fontSize(11).fillColor(BRAND.muted)
-      .text(`${m.score != null ? `Score ${m.score} · ` : ''}${m.counts.critical} critical · ${m.counts.high} high · ${m.counts.medium} medium · ${m.counts.low} low`);
-    doc.fontSize(10).fillColor(BRAND.label).text(`Generated ${fmtDate(m.date)}`);
-    doc.moveDown(1);
 
-    doc.font('Helvetica-Bold').fontSize(14).fillColor(BRAND.ink).text('What we found');
-    doc.moveDown(0.5);
+    // Grade block
+    doc.font('Helvetica-Bold').fontSize(46).fillColor(gradeColor(m.grade)).text(m.grade ?? '—', MARGIN, doc.y);
+    doc.font('Helvetica').fontSize(11).fillColor(BRAND.muted)
+      .text(`${m.counts.critical} critical · ${m.counts.high} high · ${m.counts.medium} medium · ${m.counts.low} low`, MARGIN, doc.y + 3);
+    if (m.score != null) doc.font('Helvetica').fontSize(10).fillColor(BRAND.muted).text(`Score ${m.score} / 100`, MARGIN, doc.y + 2);
+    doc.font('Helvetica').fontSize(9.5).fillColor(BRAND.label).text(`Generated ${fmtDate(m.date)}`, MARGIN, doc.y + 2);
+    hairline(doc, 14, 18);
+
+    doc.font('Helvetica-Bold').fontSize(13).fillColor(BRAND.ink).text('What we found', MARGIN, doc.y);
+    doc.moveDown(0.7);
+
     if (m.findings.length === 0) {
-      doc.font('Helvetica').fontSize(11).fillColor(BRAND.muted).text('No issues found in this scan — nice work.');
+      doc.font('Helvetica').fontSize(11).fillColor(BRAND.muted).text('No issues found in this scan — nice work.', MARGIN, doc.y);
     }
-    for (const f of m.findings) {
-      doc.font('Helvetica-Bold').fontSize(9).fillColor(gradeColor(f.severity === 'critical' || f.severity === 'high' ? 'F' : f.severity === 'medium' ? 'C' : 'A'))
-        .text(f.severity.toUpperCase());
-      doc.font('Helvetica-Bold').fontSize(12).fillColor(BRAND.ink).text(f.title);
-      if (f.whyItMatters) doc.font('Helvetica').fontSize(10.5).fillColor(BRAND.muted).text(f.whyItMatters);
-      if (f.where) doc.font('Helvetica-Oblique').fontSize(9.5).fillColor(BRAND.label).text(f.where);
-      if (f.fix) { doc.font('Helvetica-Bold').fontSize(10).fillColor(BRAND.ink).text('Fix:'); doc.font('Helvetica').fontSize(10).fillColor(BRAND.text).text(f.fix); }
-      if (f.fixPrompt) { doc.font('Helvetica-Bold').fontSize(10).fillColor(BRAND.ink).text('Prompt for your AI:'); doc.font('Helvetica').fontSize(10).fillColor(BRAND.text).text(f.fixPrompt); }
-      doc.moveDown(0.8);
-    }
+    m.findings.forEach((f, i) => {
+      ensureSpace(doc, 96);
+      if (i > 0) hairline(doc, 8, 16);
+      doc.font('Helvetica-Bold').fontSize(8.5).fillColor(sevColor(f.severity)).text(f.severity.toUpperCase(), MARGIN, doc.y, { characterSpacing: 0.5 });
+      doc.font('Helvetica-Bold').fontSize(12.5).fillColor(BRAND.ink).text(f.title, MARGIN, doc.y + 2, { width: contentWidth(doc) });
+      if (f.whyItMatters) doc.font('Helvetica').fontSize(10.5).fillColor(BRAND.muted).text(f.whyItMatters, MARGIN, doc.y + 2, { width: contentWidth(doc), lineGap: 1 });
+      if (f.where) doc.font('Helvetica-Oblique').fontSize(9).fillColor(BRAND.label).text(f.where, MARGIN, doc.y + 3, { width: contentWidth(doc) });
+      if (f.fix) fixBlock(doc, 'The fix', f.fix);
+      if (f.fixPrompt) fixBlock(doc, 'Prompt for your AI', f.fixPrompt);
+    });
+
     if (m.fixesLocked) {
-      doc.moveDown(0.5);
-      doc.font('Helvetica-Oblique').fontSize(10).fillColor(BRAND.yellowDark)
-        .text('Upgrade to Guard to unlock the exact fix (and an AI prompt) for every issue above.');
+      hairline(doc, 12, 16);
+      doc.font('Helvetica-Bold').fontSize(10).fillColor(BRAND.yellowDark)
+        .text('Upgrade to Guard to unlock the exact fix and an AI prompt for every issue above.', MARGIN, doc.y, { width: contentWidth(doc) });
     }
-    doc.moveDown(1);
-    doc.font('Helvetica').fontSize(9).fillColor(BRAND.label).text('Generated by Veilguard · veilguard.dev');
+
+    hairline(doc, 16, 12);
+    doc.font('Helvetica').fontSize(9).fillColor(BRAND.label).text('Generated by Veilguard · veilguard.dev', MARGIN, doc.y);
   });
 }
 
 function renderAccountPdf(m: AccountReportModel): Promise<Buffer> {
   return pdfToBuffer((doc) => {
     header(doc, 'Account security summary');
-    doc.font('Helvetica').fontSize(11).fillColor(BRAND.muted).text(`Plan: ${m.plan === 'guard' ? 'Guard' : 'Free'} · Scans used this month: ${m.scansUsed} / ${m.scanLimit}`);
-    doc.fontSize(10).fillColor(BRAND.label).text(`Generated ${fmtDate(m.date)}`);
-    doc.moveDown(1);
-    doc.font('Helvetica-Bold').fontSize(14).fillColor(BRAND.ink).text('Your apps');
-    doc.moveDown(0.5);
-    if (m.apps.length === 0) doc.font('Helvetica').fontSize(11).fillColor(BRAND.muted).text('No completed scans yet.');
-    for (const a of m.apps) {
-      doc.font('Helvetica-Bold').fontSize(12).fillColor(gradeColor(a.grade)).text(`${a.grade ?? '—'}`, { continued: true });
-      doc.font('Helvetica-Bold').fontSize(12).fillColor(BRAND.ink).text(`  ${a.name}`, { continued: true });
-      doc.font('Helvetica').fontSize(10.5).fillColor(BRAND.muted).text(`   — ${a.openIssues} open issue${a.openIssues === 1 ? '' : 's'}`);
-      doc.moveDown(0.4);
-    }
-    doc.moveDown(1);
-    doc.font('Helvetica').fontSize(9).fillColor(BRAND.label).text('Generated by Veilguard · veilguard.dev');
+    doc.font('Helvetica').fontSize(11).fillColor(BRAND.muted).text(`Plan: ${m.plan === 'guard' ? 'Guard' : 'Free'} · Scans used this month: ${m.scansUsed} / ${m.scanLimit}`, MARGIN, doc.y, { width: contentWidth(doc) });
+    doc.font('Helvetica').fontSize(9.5).fillColor(BRAND.label).text(`Generated ${fmtDate(m.date)}`, MARGIN, doc.y + 2);
+    hairline(doc, 14, 18);
+
+    doc.font('Helvetica-Bold').fontSize(13).fillColor(BRAND.ink).text('Your apps', MARGIN, doc.y);
+    doc.moveDown(0.7);
+    if (m.apps.length === 0) doc.font('Helvetica').fontSize(11).fillColor(BRAND.muted).text('No completed scans yet.', MARGIN, doc.y);
+    m.apps.forEach((a, i) => {
+      ensureSpace(doc, 40);
+      if (i > 0) hairline(doc, 6, 12);
+      doc.font('Helvetica-Bold').fontSize(13).fillColor(gradeColor(a.grade)).text(`${a.grade ?? '—'}  `, MARGIN, doc.y, { continued: true });
+      doc.font('Helvetica-Bold').fontSize(12).fillColor(BRAND.ink).text(a.name, { continued: true });
+      doc.font('Helvetica').fontSize(10.5).fillColor(a.openIssues > 0 ? '#DC2626' : BRAND.muted).text(`    ${a.openIssues} open issue${a.openIssues === 1 ? '' : 's'}`);
+    });
+
+    hairline(doc, 16, 12);
+    doc.font('Helvetica').fontSize(9).fillColor(BRAND.label).text('Generated by Veilguard · veilguard.dev', MARGIN, doc.y);
   });
 }
 
