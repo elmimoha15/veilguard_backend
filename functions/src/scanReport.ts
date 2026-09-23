@@ -1,6 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { getScan, getUser, listUserScans, listFindingDocs, readPrivateFix } from '../../shared/src/firestore.js';
-import { getUsageCounts, scanLimit } from '../../shared/src/usage.js';
+import { getUsageCounts, scanLimit, formatScanLimit } from '../../shared/src/usage.js';
 import { userApps } from '../../shared/src/monitor.js';
 import { canReadFix } from './entitlements.js';
 import { requireAuth, AuthError } from './auth.js';
@@ -236,7 +236,7 @@ function renderScanPdf(m: ScanReportModel): Promise<Buffer> {
 function renderAccountPdf(m: AccountReportModel): Promise<Buffer> {
   return pdfToBuffer((doc) => {
     header(doc, 'Account security summary');
-    doc.font('Helvetica').fontSize(11).fillColor(BRAND.muted).text(`Plan: ${m.plan === 'guard' ? 'Guard' : 'Free'} · Scans used this month: ${m.scansUsed} / ${m.scanLimit}`, MARGIN, doc.y, { width: contentWidth(doc) });
+    doc.font('Helvetica').fontSize(11).fillColor(BRAND.muted).text(`Plan: ${m.plan === 'guard' ? 'Guard' : 'Free'} · Scans used this month: ${m.scansUsed} / ${formatScanLimit(m.scanLimit)}`, MARGIN, doc.y, { width: contentWidth(doc) });
     doc.font('Helvetica').fontSize(9.5).fillColor(BRAND.label).text(`Generated ${fmtDate(m.date)}`, MARGIN, doc.y + 2);
     hairline(doc, 14, 18);
 

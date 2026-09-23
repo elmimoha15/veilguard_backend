@@ -66,7 +66,7 @@ export async function handleCreateScan(
       const n = effectiveScanLimit(plan, comp);
       return {
         status: 429,
-        body: { error: `Monthly scan limit reached (${n}/${n}). It resets next cycle — upgrade or reach out for a higher limit.`, code: 'E_SCAN_LIMIT' },
+        body: { error: `Monthly scan limit reached (${n} of ${n}). It resets as your older scans roll off the 30 day window. Reach out if you need a higher limit.`, code: 'E_SCAN_LIMIT' },
       };
     }
   }

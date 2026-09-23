@@ -45,7 +45,7 @@ process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
 import { createDevServer } from '../functions/src/local-server.js';
 import { getDb, getScan } from '../shared/src/firestore.js';
 import { config } from '../shared/src/config.js';
-import { getUsageCounts, canScan, underAiFixCap } from '../shared/src/usage.js';
+import { getUsageCounts, canScan, underAiFixCap, effectiveScanLimit, UNLIMITED } from '../shared/src/usage.js';
 import { QUICKCART_PATH, waitForTerminal, startStaticServer } from './harness.js';
 import { createScanPublic } from './harness.js';
 import { authedClient, isPermissionDenied, type AuthedClientHandle } from './client.js';
@@ -220,25 +220,21 @@ describe('F — per-plan scan caps enforced server-side', () => {
     await A.close();
   });
 
-  it('the Free cap (2/month) is enforced at scan time — a 3rd scan is a clear 429', async () => {
+  it('Free is unlimited — the per-plan cap never blocks a free user', async () => {
+    // Free is unlimited in code, regardless of any FREE_MAX_SCANS_PER_MONTH env.
     vi.stubEnv('FREE_MAX_SCANS_PER_MONTH', '2');
+    expect(effectiveScanLimit('free')).toBe(UNLIMITED);
     const A = await authedClient(email(), 'password123', 'free');
     await post('/me', {}, A.token);
-    // Seed two completed scans this month so the Free user is at the cap.
+    // Seed well past the old cap; a free user is still allowed to scan.
     const at = new Date().toISOString();
-    for (const id of ['s1', 's2']) {
+    for (const id of ['u1', 'u2', 'u3', 'u4', 'u5']) {
       await getDb().collection('scans').doc(`${A.uid}-${id}`).set({
         id: `${A.uid}-${id}`, ownerUid: A.uid, type: 'url', status: 'done',
         createdAt: at, target: { type: 'url', value: `https://${id}.example.com` },
       });
     }
-    expect(await canScan(A.uid, 'free')).toBe(false);
-    // A third scan is blocked before any scan doc is created.
-    const rNew = await post('/createScan', { target: { type: 'url', value: 'https://three.example.com' } }, A.token);
-    expect(rNew.status).toBe(429);
-    expect(rNew.body.code).toBe('E_SCAN_LIMIT');
-    // Guard's higher pool (30) leaves the same user well under the cap.
-    expect(await canScan(A.uid, 'guard')).toBe(true);
+    expect(await canScan(A.uid, 'free')).toBe(true); // unlimited
     await A.close();
   });
 });

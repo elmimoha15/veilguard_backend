@@ -42,7 +42,8 @@ export function MonthlySummary({
         </Text>
       ))}
 
-      <Paragraph muted>Scans used this month: {scansUsed} / {scanLimit}.</Paragraph>
+      {/* The Free plan is unlimited (usage.ts UNLIMITED sentinel = 1,000,000). */}
+      <Paragraph muted>Scans used this month: {scansUsed} / {scanLimit >= 1_000_000 ? 'Unlimited' : scanLimit}.</Paragraph>
 
       <Btn href={ctaUrl}>Open your dashboard</Btn>
     </Layout>

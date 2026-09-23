@@ -46,7 +46,7 @@ async function userDoc(uid: string) {
 
 describe('effectiveScanLimit', () => {
   it('is the plan cap normally, and effectively-unlimited for comp', () => {
-    expect(effectiveScanLimit('free', false)).toBe(scanLimit('free'));   // 2
+    expect(effectiveScanLimit('free', false)).toBe(scanLimit('free'));   // unlimited
     expect(effectiveScanLimit('guard', false)).toBe(scanLimit('guard')); // 30
     expect(effectiveScanLimit('guard', true)).toBe(1_000_000);
     expect(effectiveScanLimit('free', true)).toBe(1_000_000);            // comp overrides plan
@@ -72,26 +72,28 @@ describe('comp allowlist via /me (ensureUser)', () => {
     await C.close();
   });
 
-  it('a NON-allowlisted email stays Free with no comp flag, and is capped', async () => {
+  it('a NON-allowlisted email stays Free with no comp flag, and Free is unlimited', async () => {
     const N = await authedClient(`regular-${Date.now()}@test.dev`, 'password123');
     const me = await post('/me', {}, N.token);
     expect(me.status).toBe(200);
     expect(me.body.plan).toBe('free');
     expect(me.body.comp).toBeUndefined();
+    // Free caps read as unlimited in /me.
+    expect((me.body.caps as { maxScansPerMonth: number }).maxScansPerMonth).toBe(1_000_000);
 
     const d = await userDoc(N.uid);
     expect(d?.plan).toBe('free');
     expect(d?.comp).toBeUndefined();
 
-    // Seed 2 done scans → at the Free cap → the next scan is blocked.
+    // Seed several done scans → a Free user is still never blocked (unlimited).
     const at = new Date().toISOString();
-    for (const id of ['c1', 'c2']) {
+    for (const id of ['c1', 'c2', 'c3']) {
       await getDb().collection('scans').doc(`${N.uid}-${id}`).set({
         id: `${N.uid}-${id}`, ownerUid: N.uid, type: 'url', status: 'done',
         createdAt: at, target: { type: 'url', value: `https://${id}.example.com` },
       });
     }
-    expect(await canScan(N.uid, 'free', false)).toBe(false);
+    expect(await canScan(N.uid, 'free', false)).toBe(true);
     await N.close();
   });
 });

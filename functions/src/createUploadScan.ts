@@ -60,7 +60,7 @@ export async function handleCreateUploadSession(
   const { plan, comp } = await getPlanAndComp(uid);
   if (!(await canScan(uid, plan, comp))) {
     const n = effectiveScanLimit(plan, comp);
-    return { status: 429, body: { error: `Monthly scan limit reached (${n}/${n}). It resets next cycle — reach out if you need a higher limit.`, code: 'E_SCAN_LIMIT' } };
+    return { status: 429, body: { error: `Monthly scan limit reached (${n} of ${n}). It resets as your older scans roll off the 30 day window. Reach out if you need a higher limit.`, code: 'E_SCAN_LIMIT' } };
   }
 
   const scanId = newScanId();

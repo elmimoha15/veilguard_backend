@@ -4,8 +4,8 @@
  * The user-visible number (scans this month) is derived on read from the `scans`
  * collection — NOT from a fragile counter — so it's always accurate and survives
  * logout/login. Apps are unlimited; the only quota is a per-plan MONTHLY SCAN
- * cap (Free = 2, Guard = 30) that every scan type draws from. A failed (errored)
- * scan counts as neither used nor pending.
+ * cap (Free = unlimited, Guard = 30) that every scan type draws from. A failed
+ * (errored) scan counts as neither used nor pending.
  *
  * The one thing we still can't derive from scans — the monthly Claude fix-
  * generation call count (cache hits don't create scans) — stays a real counter
@@ -17,14 +17,26 @@ import type { UserDoc } from './types.js';
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60_000;
 
-/** Per-plan monthly scan allowance (every scan type draws from this pool). */
+/** Sentinel for an effectively-unlimited scan allowance (finite so arithmetic/
+ *  display stay sane). Comp accounts and the Free plan both use this. */
+export const UNLIMITED = 1_000_000;
+
+/** Per-plan monthly scan allowance (every scan type draws from this pool).
+ *  Free is unlimited (its scans are cheap URL scans that never call Claude);
+ *  Guard is capped (its scans can generate paid Claude fixes). Free is unlimited
+ *  in code regardless of FREE_MAX_SCANS_PER_MONTH. */
 export function scanLimit(plan: string | undefined): number {
-  return plan === 'guard' ? config.guardMaxScansPerMonth : config.freeMaxScansPerMonth;
+  return plan === 'guard' ? config.guardMaxScansPerMonth : UNLIMITED;
 }
 
 /** Effective allowance: comp (owner/testing) accounts are effectively unlimited. */
 export function effectiveScanLimit(plan: string | undefined, comp = false): number {
-  return comp ? 1_000_000 : scanLimit(plan);
+  return comp ? UNLIMITED : scanLimit(plan);
+}
+
+/** Human display of a scan allowance: the sentinel reads as "Unlimited". */
+export function formatScanLimit(limit: number): string {
+  return limit >= UNLIMITED ? 'Unlimited' : String(limit);
 }
 
 export interface UsageCounts {
