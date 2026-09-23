@@ -60,8 +60,9 @@ describe('comp allowlist via /me (ensureUser)', () => {
     expect(me.status).toBe(200);
     expect(me.body.plan).toBe('guard');
     expect(me.body.comp).toBe(true);
-    // caps in /me are effectively unlimited
-    expect((me.body.caps as { maxScansPerMonth: number }).maxScansPerMonth).toBe(1_000_000);
+    // caps in /me show the plan's nominal cap for display (Guard = 30); the comp
+    // bypass is enforcement-only (canScan stays true, asserted below).
+    expect((me.body.caps as { maxScansPerMonth: number }).maxScansPerMonth).toBe(30);
 
     const d = await userDoc(C.uid);
     expect(d?.plan).toBe('guard');

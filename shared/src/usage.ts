@@ -131,6 +131,9 @@ export async function meWithUsage(user: UserDoc): Promise<Record<string, unknown
   return {
     ...user,
     usage: { scansThisMonth: counts.scansThisMonth },
-    caps: { maxScansPerMonth: effectiveScanLimit(user.plan, user.comp) },
+    // Display cap = the PLAN's nominal cap (Free unlimited, Guard 30). The comp
+    // bypass is enforcement-only (canScan/effectiveScanLimit), so a comp/owner
+    // Guard account still shows "used / 30" rather than "Unlimited".
+    caps: { maxScansPerMonth: scanLimit(user.plan) },
   };
 }
