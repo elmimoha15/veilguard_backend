@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { FindingSchema, TargetSchema, CountsSchema, GradeSchema } from 'veilguard-scanner';
+import { FindingSchema, TargetSchema, CountsSchema, GradeSchema, PassedCheckSchema } from 'veilguard-scanner';
 import type { Finding, ScanReport, ScanProgress, Target } from 'veilguard-scanner';
 
 export type { Finding, ScanReport, ScanProgress, Target };
@@ -74,6 +74,9 @@ export const ScanDocSchema = z.object({
   grade: GradeSchema.optional(),
   score: z.number().int().optional(),
   counts: CountsSchema.optional(),
+  // Security checks the app PASSED (positive results) — shown as "what's solid".
+  // Never affects the grade; visible to all plans (unlike fixes).
+  passed: z.array(PassedCheckSchema).optional(),
   // Free-text failure message (server logs / debugging). Never shown raw to users.
   error: z.string().optional(),
   // Coarse, client-mappable failure reason — the worker classifies each failure so

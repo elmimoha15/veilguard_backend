@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execa } from 'execa';
 import { buildContext, runScan as runEngine, grade, findingId } from 'veilguard-scanner';
-import type { Finding, Counts, Grade } from 'veilguard-scanner';
+import type { Finding, Counts, Grade, PassedCheck } from 'veilguard-scanner';
 import { config } from '../../shared/src/config.js';
 import { decryptJson, encryptJson } from '../../shared/src/crypto.js';
 import { installationToken } from '../../shared/src/github-app.js';
@@ -242,8 +242,9 @@ export async function runDeepEngine(
   workspace: string,
   doc: ScanDoc,
   anonReadable: string[] = [],
-): Promise<{ grade: Grade; score: number; counts: Counts; stack: DetectedStack; aiUsage?: AiUsageSummary }> {
+): Promise<{ grade: Grade; score: number; counts: Counts; passed: PassedCheck[]; stack: DetectedStack; aiUsage?: AiUsageSummary }> {
   const all: Finding[] = [];
+  const passes: PassedCheck[] = [];
   const onFinding = (f: Finding) => {
     all.push(f);
     return writeFinding(scanId, f);
@@ -253,7 +254,7 @@ export async function runDeepEngine(
   // White-box over the connected source.
   const repoCtx = await buildContext({ type: 'repo', value: workspace });
   const stack = detectStack(repoCtx.repo);
-  await runEngine(repoCtx, { skipEngines: true, onFinding, onProgress });
+  passes.push(...(await runEngine(repoCtx, { skipEngines: true, onFinding, onProgress })).passed);
 
   // Active anon-read probe results (read-only) — a live confirmation that the
   // anon role can read tables it shouldn't. These come from the connector, not
@@ -265,7 +266,7 @@ export async function runDeepEngine(
   // Optional black-box over a provided URL — one unified grade over the app.
   if (doc.sources?.url) {
     const urlCtx = await buildContext({ type: 'url', value: doc.sources.url });
-    await runEngine(urlCtx, { skipEngines: true, onFinding, onProgress });
+    passes.push(...(await runEngine(urlCtx, { skipEngines: true, onFinding, onProgress })).passed);
   }
 
   // Dedupe by stable finding id (a finding could surface from >1 source).
@@ -293,7 +294,13 @@ export async function runDeepEngine(
     console.log(`[claude-fix] scan ${scanId} AI usage: ${usage.calls} calls, ${usage.inputTokens}+${usage.outputTokens} tok, ~$${estCostUsd} (${config.aiFixModel})`);
   }
 
-  return { ...grade(uniq), stack, aiUsage };
+  // Dedupe passes by id across the code + URL sub-scans; set counts.passed so the
+  // tile/count matches the list. Passes never affect grade/score.
+  const passSeen = new Set<string>();
+  const passed = passes.filter((p) => (passSeen.has(p.id) ? false : (passSeen.add(p.id), true)));
+  const graded = grade(uniq);
+  graded.counts.passed = passed.length;
+  return { ...graded, passed, stack, aiUsage };
 }
 
 const AI_SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };

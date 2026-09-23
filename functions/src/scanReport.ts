@@ -19,6 +19,11 @@ export interface ReportFinding {
   fix?: string;
   fixPrompt?: string;
 }
+export interface ReportPass {
+  title: string;
+  detail?: string;
+  category: string;
+}
 export interface ScanReportModel {
   target: string;
   grade: string | null;
@@ -26,6 +31,8 @@ export interface ScanReportModel {
   counts: { critical: number; high: number; medium: number; low: number };
   date: string;
   findings: ReportFinding[];
+  /** Security checks the app passed (positive results) — shown as "What's solid". */
+  passed: ReportPass[];
   /** True if some fixes were withheld (Free plan) — the PDF shows an upgrade note. */
   fixesLocked: boolean;
 }
@@ -94,6 +101,7 @@ export async function buildScanReport(uid: string, scanId: string, scan: ScanDoc
     counts: openCount(scan),
     date: scan.finishedAt ?? scan.createdAt,
     findings,
+    passed: (scan.passed ?? []).map((p) => ({ title: p.title, detail: p.detail, category: p.category })),
     fixesLocked,
   };
 }
@@ -200,6 +208,19 @@ function renderScanPdf(m: ScanReportModel): Promise<Buffer> {
       if (f.fix) fixBlock(doc, 'The fix', f.fix);
       if (f.fixPrompt) fixBlock(doc, 'Prompt for your AI', f.fixPrompt);
     });
+
+    if (m.passed.length > 0) {
+      hairline(doc, 12, 16);
+      doc.font('Helvetica-Bold').fontSize(13).fillColor(BRAND.ink).text('What’s solid', MARGIN, doc.y);
+      doc.moveDown(0.5);
+      m.passed.forEach((p) => {
+        ensureSpace(doc, 30);
+        doc.font('Helvetica-Bold').fontSize(10.5).fillColor('#16A34A').text('•', MARGIN, doc.y, { continued: true });
+        doc.font('Helvetica-Bold').fontSize(10.5).fillColor(BRAND.ink).text(`  ${p.title}`, { continued: false });
+        if (p.detail) doc.font('Helvetica').fontSize(9.5).fillColor(BRAND.muted).text(p.detail, MARGIN + 12, doc.y + 1, { width: contentWidth(doc) - 12 });
+        doc.moveDown(0.4);
+      });
+    }
 
     if (m.fixesLocked) {
       hairline(doc, 12, 16);

@@ -1,6 +1,6 @@
 import { existsSync, statSync } from 'node:fs';
 import { buildContext, runScan as runEngine } from 'veilguard-scanner';
-import type { ScanProgress, Grade, Counts } from 'veilguard-scanner';
+import type { ScanProgress, Grade, Counts, PassedCheck } from 'veilguard-scanner';
 import { buildDeepWorkspace, runDeepEngine, removeWorkspace, workspacePath, NeedsReconnectError } from './deepScan.js';
 import { buildUploadWorkspace } from './uploadScan.js';
 import type { ScanErrorReason } from '../../shared/src/types.js';
@@ -86,7 +86,7 @@ export async function runScanJob(job: ScanJob): Promise<void> {
   let completed = false;
 
   try {
-    let result: { grade: Grade; score: number; counts: Counts; stack?: { supabase?: boolean; firebase?: boolean; firebaseRulesInRepo?: boolean }; aiUsage?: { model: string; calls: number; inputTokens: number; outputTokens: number; estCostUsd: number } };
+    let result: { grade: Grade; score: number; counts: Counts; passed?: PassedCheck[]; stack?: { supabase?: boolean; firebase?: boolean; firebaseRulesInRepo?: boolean }; aiUsage?: { model: string; calls: number; inputTokens: number; outputTokens: number; estCostUsd: number } };
 
     if (doc.type === 'deep') {
       if (!doc.ownerUid) throw new Error('deep scan requires an owner');
@@ -124,6 +124,7 @@ export async function runScanJob(job: ScanJob): Promise<void> {
       grade: result.grade,
       score: result.score,
       counts: result.counts,
+      ...(result.passed ? { passed: result.passed } : {}),
       ...(result.stack ? { stack: result.stack } : {}),
       ...(result.aiUsage ? { aiUsage: result.aiUsage } : {}),
       ...finishedFields(),
