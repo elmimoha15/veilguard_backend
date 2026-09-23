@@ -8,9 +8,9 @@ import type { HttpResult } from './createScan.js';
 
 /** Map a public finding to the fields Claude needs. */
 function toFixInput(f: PublicFinding): FixInput {
-  const p = f as unknown as { ruleId: string; category?: string; severity: string; title: string; whyItMatters?: string; location?: { file?: string; line?: number; url?: string } };
+  const p = f as unknown as { ruleId: string; category?: string; severity: string; title: string; whyItMatters?: string; confidence?: string; location?: { file?: string; line?: number; url?: string } };
   const where = p.location?.file ? `${p.location.file}${p.location.line ? `:${p.location.line}` : ''}` : p.location?.url;
-  return { ruleId: p.ruleId, category: p.category, severity: p.severity, title: p.title, whyItMatters: p.whyItMatters, where };
+  return { ruleId: p.ruleId, category: p.category, severity: p.severity, title: p.title, whyItMatters: p.whyItMatters, where, confidence: p.confidence };
 }
 
 /**

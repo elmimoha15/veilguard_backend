@@ -348,7 +348,9 @@ async function enhanceWithAiFixes(scanId: string, ws: string, findings: Finding[
   if (!config.aiFixEnabled || !uid) return undefined;
   resetAiUsage(); // start counting this scan's Claude tokens
   const candidates = findings
-    .filter((f) => f.location?.file && (f.fix || f.fixPrompt))
+    // Skip low-confidence ("possible — verify") findings: they don't warrant an
+    // expensive tailored fix — they keep the canned fix + the "verify" note.
+    .filter((f) => f.confidence !== 'low' && f.location?.file && (f.fix || f.fixPrompt))
     .sort((a, b) => (AI_SEV_RANK[b.severity] ?? 0) - (AI_SEV_RANK[a.severity] ?? 0))
     .slice(0, config.aiFixMaxPerScan);
 
@@ -365,7 +367,7 @@ async function enhanceWithAiFixes(scanId: string, ws: string, findings: Finding[
       }
       try {
         ai = await generateFix(
-          { ruleId: f.ruleId, category: f.category, severity: f.severity, title: f.title, whyItMatters: f.whyItMatters, where: findingWhere(f) },
+          { ruleId: f.ruleId, category: f.category, severity: f.severity, title: f.title, whyItMatters: f.whyItMatters, where: findingWhere(f), confidence: f.confidence },
           snippet,
         );
       } catch (e) {

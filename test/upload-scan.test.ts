@@ -39,10 +39,10 @@ function zipDir(root: string): Uint8Array {
  *  (browser→GCS direct in prod; here the local dev server writes to LocalFsStaging).
  *  Returns the response of whichever step first fails, else the finalize 202. */
 async function postZip(zip: Uint8Array, token: string | undefined, name = 'proj') {
-  return uploadBytes(Buffer.from(zip), token, name);
+  return uploadBytes(new Uint8Array(zip), token, name);
 }
-async function uploadBytes(body: Buffer, token: string | undefined, name = 'proj') {
-  const auth = token ? { authorization: `Bearer ${token}` } : {};
+async function uploadBytes(body: Uint8Array, token: string | undefined, name = 'proj') {
+  const auth: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
   const s = await fetch(`${baseUrl}/createUploadSession`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...auth },
@@ -51,7 +51,7 @@ async function uploadBytes(body: Buffer, token: string | undefined, name = 'proj
   const sBody = (await s.json().catch(() => ({}))) as any;
   if (!s.ok) return { status: s.status, body: sBody };
   const putUrl = (sBody.uploadUrl as string).startsWith('http') ? sBody.uploadUrl : `${baseUrl}${sBody.uploadUrl}`;
-  await fetch(putUrl, { method: 'PUT', headers: { 'content-type': 'application/zip' }, body });
+  await fetch(putUrl, { method: 'PUT', headers: { 'content-type': 'application/zip' }, body: body as unknown as BodyInit });
   const f = await fetch(`${baseUrl}/finalizeUploadScan`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...auth },

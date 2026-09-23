@@ -36,6 +36,8 @@ export interface FixInput {
   title: string;
   whyItMatters?: string;
   where?: string;
+  /** Detection confidence — 'low' means "possible, verify" (phrase cautiously). */
+  confidence?: string;
 }
 
 /**
@@ -93,15 +95,16 @@ const SYSTEM = [
   'You are given one finding and the exact code snippet it was found in.',
   'Return ONLY a single JSON object (no prose, no markdown fences) with exactly these string fields:',
   '  "explanation": 2-4 sentences a non-technical founder understands — what the risk is and why it matters, in plain language.',
-  '  "code": the corrected version of THEIR snippet. Reuse their real variable/table/file/function names from the snippet. Keep it minimal and safe — fix only this issue, invent no APIs, add no unrelated changes.',
+  '  "code": the ACTUAL corrected code they can paste in — real, applyable code, not a description. Include the import line(s) and the changed line(s) (show before→after when it helps), reusing their real variable/table/file/function names from the snippet. NEVER answer with a description like "sanitize the input" or "use parameterized queries" — always give the real code that does it. Fix only this issue; invent no APIs; add no unrelated changes.',
   '  "aiPrompt": a short copy-paste instruction they can hand to an AI coding tool (Lovable/Cursor) to apply this fix to their codebase.',
+  'If the finding is marked "Confidence: low" it may be a FALSE POSITIVE (e.g. an example in a documentation/marketing/content file, not live code). In that case make "explanation" ONE short sentence — say it looks like an example rather than a live issue and to verify it is not real before changing anything — and keep "code" to the minimal illustrative change.',
   'Be conservative and correct. If you are unsure, prefer the smallest safe change. Output must be valid JSON and nothing else.',
 ].join('\n');
 
 function buildUserPrompt(input: FixInput, snippet: string): string {
   return [
     `Finding: ${input.title}`,
-    `Rule: ${input.ruleId}  Severity: ${input.severity}${input.category ? `  Category: ${input.category}` : ''}`,
+    `Rule: ${input.ruleId}  Severity: ${input.severity}${input.category ? `  Category: ${input.category}` : ''}${input.confidence ? `  Confidence: ${input.confidence}` : ''}`,
     input.whyItMatters ? `Why it matters: ${input.whyItMatters}` : '',
     input.where ? `Location: ${input.where}` : '',
     '',
@@ -131,6 +134,19 @@ function identifiers(s: string): Set<string> {
   return new Set((s.match(/[A-Za-z_][A-Za-z0-9_]{3,}/g) ?? []).map((w) => w.toLowerCase()));
 }
 
+/**
+ * True when `code` reads like real, applyable code rather than a prose
+ * description ("sanitize the input", "use parameterized queries"). Requires some
+ * code punctuation or a code/SQL keyword — this is what enforces "always ship
+ * real code, never a vague instruction".
+ */
+function looksLikeCode(code: string): boolean {
+  if (/[;{}()=<>[\]`]/.test(code)) return true;
+  if (/=>|\bimport\b|\bconst\b|\blet\b|\bfunction\b|\bawait\b|\breturn\b/.test(code)) return true;
+  if (/\bcreate\s+policy\b|\balter\s+table\b|\benable\s+row\s+level\s+security\b|\bgrant\b|\brevoke\b/i.test(code)) return true;
+  return false;
+}
+
 /** Validate the model's output; return a clean AiFix or null (→ caller uses canned). */
 function validate(raw: unknown, snippet: string): AiFix | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -140,6 +156,7 @@ function validate(raw: unknown, snippet: string): AiFix | null {
   const aiPrompt = typeof o.aiPrompt === 'string' ? o.aiPrompt.trim() : '';
   if (!code || !explanation || !aiPrompt) return null;
   if (explanation.length < 12 || code.length < 8) return null;
+  if (!looksLikeCode(code)) return null; // reject vague prose ("sanitize it") → caller keeps canned
   // Light relevance check: the corrected code should share at least one real
   // identifier with the snippet (so an off-topic/generic answer is rejected).
   const snipIds = identifiers(snippet);
@@ -215,15 +232,16 @@ const SYSTEM_META = [
   'You are given the finding details and the security scanner\'s generic fix. The exact source code is NOT available.',
   'Return ONLY a single JSON object (no prose, no markdown fences) with exactly these string fields:',
   '  "explanation": 2-4 sentences a non-technical founder understands — the risk and why it matters, in plain language.',
-  '  "code": a concrete corrected code/config example that shows how to fix this issue for this stack (Supabase/Firebase/Next.js/Stripe as relevant). Keep it minimal and safe; invent no APIs.',
+  '  "code": a concrete, paste-ready code/config example that fixes this issue for this stack (Supabase/Firebase/Next.js/Stripe as relevant) — REAL code with the import(s) and the changed line(s), never a description like "sanitize it". Keep it minimal and safe; invent no APIs.',
   '  "aiPrompt": a short copy-paste instruction they can hand to an AI coding tool (Lovable/Cursor) to apply this fix to their codebase.',
+  'If the finding is marked "Confidence: low" it may be a FALSE POSITIVE (e.g. an example in a documentation/content file). Then make "explanation" ONE short sentence noting it looks like an example and to verify it is not a real issue before changing anything.',
   'Be conservative and correct. Prefer the smallest safe change. Output must be valid JSON and nothing else.',
 ].join('\n');
 
 function buildMetaPrompt(input: FixInput, evidence?: string, canned?: { fix?: string; fixPrompt?: string }): string {
   return [
     `Finding: ${input.title}`,
-    `Rule: ${input.ruleId}  Severity: ${input.severity}${input.category ? `  Category: ${input.category}` : ''}`,
+    `Rule: ${input.ruleId}  Severity: ${input.severity}${input.category ? `  Category: ${input.category}` : ''}${input.confidence ? `  Confidence: ${input.confidence}` : ''}`,
     input.whyItMatters ? `Why it matters: ${input.whyItMatters}` : '',
     input.where ? `Location: ${input.where}` : '',
     evidence ? `Redacted evidence from the app:\n${evidence.slice(0, 2000)}` : '',
@@ -243,6 +261,7 @@ function validateMeta(raw: unknown): AiFix | null {
   const aiPrompt = typeof o.aiPrompt === 'string' ? o.aiPrompt.trim() : '';
   if (!code || !explanation || !aiPrompt) return null;
   if (explanation.length < 12 || code.length < 8) return null;
+  if (!looksLikeCode(code)) return null; // reject vague prose → caller keeps canned
   return { fix: code, fixPrompt: aiPrompt, explanation };
 }
 
