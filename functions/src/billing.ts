@@ -10,15 +10,20 @@ import {
   setSubscriptionCancel,
   isConnectionError,
 } from '../../shared/src/polar.js';
-import { requireAuth, AuthError } from './auth.js';
+import { requireAuth, requireFreshAuth, AuthError } from './auth.js';
 import type { HttpResult } from './createScan.js';
 
-async function withUid(authHeader: string | undefined, fn: (uid: string, email?: string) => Promise<HttpResult>): Promise<HttpResult> {
+async function withUid(
+  authHeader: string | undefined,
+  fn: (uid: string, email?: string) => Promise<HttpResult>,
+  opts: { fresh?: boolean } = {},
+): Promise<HttpResult> {
   try {
-    const { uid, email } = await requireAuth(authHeader);
+    // Cancelling is a sensitive action → step-up reauth; other billing reads aren't.
+    const { uid, email } = opts.fresh ? await requireFreshAuth(authHeader) : await requireAuth(authHeader);
     return await fn(uid, email);
   } catch (e) {
-    if (e instanceof AuthError) return { status: e.status, body: { error: e.message } };
+    if (e instanceof AuthError) return { status: e.status, body: { error: e.message, code: e.code } };
     throw e;
   }
 }
@@ -149,7 +154,7 @@ async function setCancel(uid: string, cancelAtPeriodEnd: boolean): Promise<HttpR
 
 /** POST /billingCancel — schedule cancellation at period end (keeps access until then). */
 export async function handleCancelSubscription(authHeader: string | undefined): Promise<HttpResult> {
-  return withUid(authHeader, (uid) => setCancel(uid, true));
+  return withUid(authHeader, (uid) => setCancel(uid, true), { fresh: true });
 }
 
 /** POST /billingReactivate — reverse a scheduled cancellation. */

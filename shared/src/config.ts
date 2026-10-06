@@ -170,6 +170,15 @@ export const config = {
   // otherwise the mock path is used (keeps CI/tests credential-free).
   get oauthCallbackBase(): string { return process.env.OAUTH_CALLBACK_BASE || ''; },
   get frontendUrl(): string { return process.env.FRONTEND_URL || 'http://localhost:3000'; },
+  /** True on the deployed Cloud Run service (NODE_ENV=production in the image). Gates
+   *  dev-only conveniences (localhost CORS, the dev-server harness) off in prod. */
+  get isProduction(): boolean { return process.env.NODE_ENV === 'production'; },
+  /** EXACT Firebase Hosting hosts allowed as browser origins (never wildcards).
+   *  Defaults to this project's web.app/firebaseapp.com; override via env csv. */
+  get firebaseHostingDomains(): string[] {
+    const env = (process.env.FIREBASE_HOSTING_DOMAINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+    return env.length ? env : [`${this.projectId}.web.app`, `${this.projectId}.firebaseapp.com`];
+  },
   get githubAppId(): string { return process.env.GITHUB_APP_ID || ''; },
   get githubAppSlug(): string { return process.env.GITHUB_APP_SLUG || ''; },
   get githubClientId(): string { return process.env.GITHUB_APP_CLIENT_ID || ''; },

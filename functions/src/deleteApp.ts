@@ -1,5 +1,5 @@
 import { purgeAppFirestore, type AppTarget } from '../../shared/src/firestore.js';
-import { requireAuth, AuthError } from './auth.js';
+import { requireFreshAuth, AuthError } from './auth.js';
 import type { HttpResult } from './createScan.js';
 
 /**
@@ -16,9 +16,9 @@ import type { HttpResult } from './createScan.js';
 export async function handleDeleteApp(rawBody: unknown, authHeader: string | undefined): Promise<HttpResult> {
   let uid: string;
   try {
-    ({ uid } = await requireAuth(authHeader));
+    ({ uid } = await requireFreshAuth(authHeader));
   } catch (e) {
-    if (e instanceof AuthError) return { status: e.status, body: { error: e.message } };
+    if (e instanceof AuthError) return { status: e.status, body: { error: e.message, code: e.code } };
     throw e;
   }
 

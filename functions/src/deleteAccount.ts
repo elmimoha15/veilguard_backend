@@ -7,7 +7,7 @@ import { uninstallInstallation } from '../../shared/src/github-app.js';
 import { deletePolarCustomerByExternalId } from '../../shared/src/polar.js';
 import { sendAccountDeleted } from '../../shared/src/emails/senders.js';
 import type { GitHubSecret, SupabaseSecret } from '../../shared/src/types.js';
-import { requireAuth, AuthError } from './auth.js';
+import { requireFreshAuth, AuthError } from './auth.js';
 import type { HttpResult } from './createScan.js';
 
 /**
@@ -20,9 +20,9 @@ export async function handleDeleteAccount(authHeader: string | undefined): Promi
   let uid: string;
   let email: string | undefined;
   try {
-    ({ uid, email } = await requireAuth(authHeader));
+    ({ uid, email } = await requireFreshAuth(authHeader));
   } catch (e) {
-    if (e instanceof AuthError) return { status: e.status, body: { error: e.message } };
+    if (e instanceof AuthError) return { status: e.status, body: { error: e.message, code: e.code } };
     throw e;
   }
 
@@ -75,6 +75,13 @@ export async function handleDeleteAccount(authHeader: string | undefined): Promi
 
   // 4) Delete the Firebase Auth login last, so a failure above doesn't leave an
   //    authenticated session with no data. Idempotent-ish: ignore "not found".
+  //    Revoke refresh tokens FIRST so any already-issued ID token for this uid is
+  //    rejected by verifyIdToken(checkRevoked) immediately, not just after ~1h.
+  try {
+    await getAuth().revokeRefreshTokens(uid);
+  } catch (e) {
+    console.error('[deleteAccount] revokeRefreshTokens failed (continuing):', e);
+  }
   try {
     await getAuth().deleteUser(uid);
   } catch (e) {

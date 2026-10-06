@@ -33,15 +33,13 @@ function isAllowedOrigin(origin: string | undefined): boolean {
     const host = new URL(origin).host;
     const feHost = new URL(config.frontendUrl).host; // e.g. veilguard.dev
     const bare = feHost.replace(/^www\./, '');
-    return (
-      host === feHost ||
-      host === bare ||
-      host === `www.${bare}` ||
-      host.endsWith('.web.app') ||
-      host.endsWith('.firebaseapp.com') ||
-      host === 'localhost:3000' ||
-      host === 'localhost'
-    );
+    const allowed = new Set<string>([feHost, bare, `www.${bare}`, ...config.firebaseHostingDomains]);
+    // localhost is a browser origin only in development — never trusted in prod.
+    if (!config.isProduction) {
+      allowed.add('localhost');
+      allowed.add('localhost:3000');
+    }
+    return allowed.has(host);
   } catch {
     return false;
   }

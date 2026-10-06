@@ -24,6 +24,7 @@ import { handleFeedback } from './feedback.js';
 import { prodCors } from './cors.js';
 import { handleConnectGitHub, handleConnectSupabase, handleDisconnect } from './connect.js';
 import { handleDeleteAccount } from './deleteAccount.js';
+import { handleRevokeSessions } from './revokeSessions.js';
 import { handleDeleteApp } from './deleteApp.js';
 import { handleListGitHubRepos } from './githubRepos.js';
 import { handleConnectBegin, handleGitHubCallback, handleSupabaseCallback, renderOAuthResult } from './oauth.js';
@@ -124,6 +125,10 @@ export function createApiApp() {
   });
   app.post('/account/delete', async (req: Request, res: Response) => {
     const r = await handleDeleteAccount(req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
+  app.post('/auth/revokeSessions', async (req: Request, res: Response) => {
+    const r = await handleRevokeSessions(req.headers.authorization);
     res.status(r.status).json(r.body);
   });
   app.post('/app/delete', async (req: Request, res: Response) => {

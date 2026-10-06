@@ -5,7 +5,7 @@ import { setConnection, deleteConnection, getEncryptedSecret } from '../../share
 import { revokeToken } from '../../shared/src/supabase-api.js';
 import { uninstallInstallation } from '../../shared/src/github-app.js';
 import type { GitHubSecret, SupabaseSecret, Provider } from '../../shared/src/types.js';
-import { requireAuth, AuthError } from './auth.js';
+import { requireAuth, requireFreshAuth, AuthError } from './auth.js';
 import { requirePaid } from './plan-gate.js';
 import type { HttpResult } from './createScan.js';
 
@@ -21,12 +21,17 @@ const PAID_CONNECT_ERROR = { status: 402 as const, body: { error: 'Connecting a 
 export const GITHUB_READONLY_SCOPES = ['contents:read', 'metadata:read'] as const;
 export const SUPABASE_ACCESS = 'read-only' as const;
 
-async function withAuth<T>(authHeader: string | undefined, fn: (uid: string) => Promise<T>): Promise<T | HttpResult> {
+async function withAuth<T>(
+  authHeader: string | undefined,
+  fn: (uid: string) => Promise<T>,
+  opts: { fresh?: boolean } = {},
+): Promise<T | HttpResult> {
   try {
-    const { uid } = await requireAuth(authHeader);
+    // Disconnect is a sensitive action → step-up reauth; connect is OAuth-fresh already.
+    const { uid } = opts.fresh ? await requireFreshAuth(authHeader) : await requireAuth(authHeader);
     return await fn(uid);
   } catch (e) {
-    if (e instanceof AuthError) return { status: e.status, body: { error: e.message } };
+    if (e instanceof AuthError) return { status: e.status, body: { error: e.message, code: e.code } };
     throw e;
   }
 }
@@ -124,6 +129,6 @@ export async function handleDisconnect(rawBody: unknown, authHeader: string | un
     }
     await deleteConnection(uid, provider);
     return { status: 200, body: { disconnected: provider } };
-  });
+  }, { fresh: true });
   return r as HttpResult;
 }

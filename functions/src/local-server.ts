@@ -26,6 +26,7 @@ import { handleSendVerification, handleSendReset } from './authEmails.js';
 import { handleFeedback } from './feedback.js';
 import { handleConnectGitHub, handleConnectSupabase, handleDisconnect } from './connect.js';
 import { handleDeleteAccount } from './deleteAccount.js';
+import { handleRevokeSessions } from './revokeSessions.js';
 import { handleDeleteApp } from './deleteApp.js';
 import { handleListGitHubRepos } from './githubRepos.js';
 import { handleConnectBegin, handleGitHubCallback, handleSupabaseCallback, renderOAuthResult } from './oauth.js';
@@ -49,6 +50,11 @@ const DEV_UI_DIR = fileURLToPath(new URL('../../dev-ui', import.meta.url));
  * keeps the SSRF guard on.
  */
 export function createDevServer() {
+  // Hard stop: this harness exposes an UNAUTHENTICATED PUT /uploadBytes and a
+  // permissive devCors — it must never run in production. Prod uses createApiApp.
+  if (config.isProduction) {
+    throw new Error('createDevServer() must not run in production — use createApiApp()');
+  }
   loadEnv(); // pull backend-root .env (OAuth creds) into process.env before serving
   const app = express();
   app.use(devCors);
@@ -157,6 +163,10 @@ export function createDevServer() {
   });
   app.post('/account/delete', async (req: Request, res: Response) => {
     const r = await handleDeleteAccount(req.headers.authorization);
+    res.status(r.status).json(r.body);
+  });
+  app.post('/auth/revokeSessions', async (req: Request, res: Response) => {
+    const r = await handleRevokeSessions(req.headers.authorization);
     res.status(r.status).json(r.body);
   });
   app.post('/app/delete', async (req: Request, res: Response) => {
