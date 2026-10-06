@@ -25,6 +25,28 @@ export const config = {
   // much longer budget. In prod the Cloud Run worker's request timeout must be
   // >= this value.
   deepScanTimeoutMs: num('DEEP_SCAN_TIMEOUT_MS', 900_000), // 15 min
+  // Budget for the full-history `git clone` specifically. On timeout the worker
+  // falls back to a shallow (--depth 1) clone and scans current files only, so a
+  // giant-history repo can't eat the whole deep-scan budget. Chosen so
+  // clone(≤240s) + gitleaks(≤180s) + osv(≤180s) = ~600s leaves ~300s headroom for
+  // native rules + AI fixes under Cloud Run's hard 900s request limit.
+  cloneTimeoutMs: num('CLONE_TIMEOUT_MS', 240_000), // 4 min
+  // Per external-engine (gitleaks / osv-scanner) wall-clock budget during a deep
+  // scan. Bounds each tool so a huge repo can't hang the worker; a tool that
+  // exceeds it is dropped and the scan completes with the remaining results.
+  // Kept well under deepScanTimeoutMs.
+  engineTimeoutMs: num('ENGINE_TIMEOUT_MS', 180_000), // 3 min
+  // Whether deep/upload scans run the external engines (gitleaks + osv-scanner).
+  // ON in prod. OFF under the emulator so the test suite is DETERMINISTIC — it
+  // must not pick up whatever scanner binaries happen to be on a dev box (e.g. a
+  // locally-installed semgrep) and must not depend on network (OSV.dev). Set
+  // ENGINES_ENABLED=1 locally to exercise them against the pinned tools.
+  get enginesEnabled(): boolean {
+    const val = (process.env.ENGINES_ENABLED || '').toLowerCase();
+    if (val === '0' || val === 'false' || val === 'off') return false;
+    if (val === '1' || val === 'true' || val === 'on') return true;
+    return !this.usingEmulator;
+  },
 
   // Cloud Tasks (prod)
   cloudTasksLocation: process.env.CLOUD_TASKS_LOCATION || 'us-central1',

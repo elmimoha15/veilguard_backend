@@ -28,6 +28,9 @@ export interface DeepWorkspace {
   ws: string;
   /** Tables the anon role could read that it shouldn't (active RLS probe). */
   anonReadable: string[];
+  /** True when the full-history clone timed out and we fell back to a shallow
+   *  (current-files-only) clone — surfaced to the user as a note. */
+  historyTruncated: boolean;
 }
 
 /** Deterministic ephemeral workspace path for a scan (so cleanup is verifiable). */
@@ -84,6 +87,7 @@ export async function buildDeepWorkspace(scanId: string, uid: string, doc: ScanD
   removeWorkspace(ws); // in case of a retry
   mkdirSync(ws, { recursive: true });
   let anonReadable: string[] = [];
+  let historyTruncated = false;
 
   if (doc.sources?.github) {
     const blob = await getEncryptedSecret(uid, 'github');
@@ -101,11 +105,29 @@ export async function buildDeepWorkspace(scanId: string, uid: string, doc: ScanD
       const repo = doc.sources.githubRepo ?? secret.repo;
       const token = await installationToken(secret.installationId);
       const url = `https://x-access-token:${token}@github.com/${repo}.git`;
-      // A large shallow clone can take a while — use the deep-scan budget, not the URL one.
-      await execa('git', ['clone', '--depth', '1', url, ws], { timeout: config.deepScanTimeoutMs });
-      // The engine never reads git history — drop .git so it doesn't bloat the
-      // workspace (disk + the size cap) or slow the scan.
-      rmSync(join(ws, '.git'), { recursive: true, force: true });
+      // FULL clone (not --depth 1): gitleaks scans commit history, so a secret
+      // that was committed then removed is still caught. `.git` is kept for the
+      // scan and wiped with the whole workspace in the caller's finally
+      // (removeWorkspace) — repo contents are never persisted. The size cap
+      // ignores .git (see dirSize), so history size never trips it.
+      //
+      // The clone gets its OWN bounded budget (cloneTimeoutMs). If a huge history
+      // blows it, fall back to a shallow clone so the scan still runs on current
+      // files — gitleaks then uses working-tree (`dir`) mode — and flag it so the
+      // user knows history wasn't scanned. Non-timeout failures (auth, missing
+      // repo) are NOT swallowed: they rethrow and surface as a clear scan error.
+      try {
+        await execa('git', ['clone', url, ws], { timeout: config.cloneTimeoutMs });
+      } catch (err) {
+        if (!(err as { timedOut?: boolean }).timedOut) throw err;
+        console.warn(`[deepScan] full clone timed out for ${repo}; falling back to shallow (current files only)`);
+        removeWorkspace(ws); // clear the partial clone — `git clone` needs an empty target
+        mkdirSync(ws, { recursive: true });
+        await execa('git', ['clone', '--depth', '1', url, ws], { timeout: 120_000 });
+        // A depth-1 clone has no usable history; drop .git so gitleaks picks `dir` mode.
+        rmSync(join(ws, '.git'), { recursive: true, force: true });
+        historyTruncated = true;
+      }
     }
   }
 
@@ -163,7 +185,7 @@ export async function buildDeepWorkspace(scanId: string, uid: string, doc: ScanD
   if (dirSize(ws) > config.deepScanMaxWorkspaceBytes) {
     throw new Error(`workspace exceeds size cap (${config.deepScanMaxWorkspaceBytes} bytes)`);
   }
-  return { ws, anonReadable };
+  return { ws, anonReadable, historyTruncated };
 }
 
 /** Concatenate the .sql files just written to `dir` (for the anon-read probe). */
@@ -251,10 +273,20 @@ export async function runDeepEngine(
   };
   const onProgress = (p: { done: number; total: number; phase: string }) => updateProgress(scanId, p);
 
-  // White-box over the connected source.
+  // White-box over the connected source. External engines (gitleaks + osv-scanner)
+  // run here — repo/upload scans only — bounded per-tool so one huge repo can't
+  // hang the worker; a tool that fails/times out is dropped and the scan still
+  // completes with native + the other engine's results.
   const repoCtx = await buildContext({ type: 'repo', value: workspace });
   const stack = detectStack(repoCtx.repo);
-  passes.push(...(await runEngine(repoCtx, { skipEngines: true, onFinding, onProgress })).passed);
+  passes.push(
+    ...(await runEngine(repoCtx, {
+      skipEngines: !config.enginesEnabled,
+      engineTimeoutMs: config.engineTimeoutMs,
+      onFinding,
+      onProgress,
+    })).passed,
+  );
 
   // Active anon-read probe results (read-only) — a live confirmation that the
   // anon role can read tables it shouldn't. These come from the connector, not

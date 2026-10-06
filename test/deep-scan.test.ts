@@ -74,7 +74,9 @@ describe('A — connect stores an ENCRYPTED, client-unreadable credential', () =
 });
 
 describe('B — deep scan finds white-box criticals (QuickCart)', () => {
-  it('grade F with hardcoded secret, SQLi, unverified webhook, broken RLS', async () => {
+  // Heavier than most: clones+parses a whole fixture repo end-to-end, so it needs
+  // more than the default 30s on a slow/cold machine.
+  it('grade F with hardcoded secret, SQLi, unverified webhook, broken RLS', { timeout: 60_000 }, async () => {
     const a = await authedClient(email(), 'password123', 'guard');
     await connectGh(a.token);
     const r = await deepScan(a.token, { github: true });
@@ -200,9 +202,11 @@ describe('H — resilience (bad/oversized/nonexistent → clean error)', () => {
   it('oversized workspace → error (size cap), workspace cleaned', async () => {
     const a = await authedClient(email(), 'password123', 'guard');
     await connectGh(a.token);
-    const orig = config.deepScanMaxBytes;
+    // The repo-workspace cap is deepScanMaxWorkspaceBytes (deepScanMaxBytes bounds
+    // UPLOAD extraction only), so override the one the github path actually checks.
+    const orig = config.deepScanMaxWorkspaceBytes;
     try {
-      (config as any).deepScanMaxBytes = 10; // 10 bytes — QuickCart exceeds it
+      (config as any).deepScanMaxWorkspaceBytes = 10; // 10 bytes — QuickCart exceeds it
       const scanId = await createDeepScanDoc(a.uid, { github: true });
       await runScanJob({ scanId });
       const d = await getScan(scanId);
@@ -210,7 +214,7 @@ describe('H — resilience (bad/oversized/nonexistent → clean error)', () => {
       expect(d?.error).toMatch(/size cap/i);
       expect(existsSync(workspacePath(scanId))).toBe(false);
     } finally {
-      (config as any).deepScanMaxBytes = orig;
+      (config as any).deepScanMaxWorkspaceBytes = orig;
     }
     await a.close();
   });

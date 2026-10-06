@@ -77,6 +77,9 @@ export const ScanDocSchema = z.object({
   // Security checks the app PASSED (positive results) — shown as "what's solid".
   // Never affects the grade; visible to all plans (unlike fixes).
   passed: z.array(PassedCheckSchema).optional(),
+  // Informational, client-readable notes about HOW the scan ran (non-secret),
+  // e.g. "History too large — scanned current files only". Never affects grade.
+  notes: z.array(z.string()).optional(),
   // Free-text failure message (server logs / debugging). Never shown raw to users.
   error: z.string().optional(),
   // Coarse, client-mappable failure reason — the worker classifies each failure so

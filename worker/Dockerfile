@@ -1,7 +1,9 @@
 # Veilguard scan worker (Cloud Run).
 #
-# The scanner engine is native-first — NO python/semgrep/gitleaks/osv or JVM are
-# needed at runtime — so this image stays small and boots fast.
+# The scanner engine is native-first and needs no runtime deps of its own, but we
+# DO ship two pinned, checksum-verified security scanners it merges in on deep /
+# upload scans: gitleaks (secrets + git history) and osv-scanner (dependency
+# CVEs). Both are small static Go binaries. (No python/semgrep/JVM.)
 #
 # IMPORTANT: build with the PARENT of both repos as the context, so the local
 # `veilguard-scanner` dependency is available:
@@ -34,6 +36,30 @@ RUN npm ci --no-audit --no-fund \
   && npx tsc -p tsconfig.build.json \
   && npm prune --omit=dev
 
+# ---- tools stage: fetch + checksum-verify the pinned security scanners ----
+# Done in a throwaway alpine stage so curl never lands in the runtime image. The
+# binaries are static, so they run fine when copied into the node:20-slim runtime.
+FROM alpine:3.20 AS tools
+RUN apk add --no-cache curl
+# Pin EXACT versions + SHA256 (from each release's published checksums). Bump both
+# together when upgrading.
+ARG GITLEAKS_VERSION=8.30.1
+ARG GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+ARG OSV_VERSION=2.6.0
+ARG OSV_SHA256=ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108
+RUN set -eux; \
+    curl -fsSL -o /tmp/gitleaks.tar.gz \
+      "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"; \
+    echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks; \
+    chmod +x /usr/local/bin/gitleaks; \
+    curl -fsSL -o /usr/local/bin/osv-scanner \
+      "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/osv-scanner_linux_amd64"; \
+    echo "${OSV_SHA256}  /usr/local/bin/osv-scanner" | sha256sum -c -; \
+    chmod +x /usr/local/bin/osv-scanner; \
+    /usr/local/bin/gitleaks version; \
+    /usr/local/bin/osv-scanner --version
+
 # ---- runtime stage ----
 FROM node:20-slim AS runtime
 ENV NODE_ENV=production
@@ -48,6 +74,10 @@ RUN apt-get update \
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /veilguard-scanner /veilguard-scanner
+
+# Pinned, checksum-verified security scanners (see tools stage). The scanner
+# detects them on PATH and merges their findings on deep/upload scans.
+COPY --from=tools /usr/local/bin/gitleaks /usr/local/bin/osv-scanner /usr/local/bin/
 
 # Cloud Run injects PORT; default matches config.ts.
 ENV PORT=8081

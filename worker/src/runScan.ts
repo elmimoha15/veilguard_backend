@@ -87,6 +87,8 @@ export async function runScanJob(job: ScanJob): Promise<void> {
 
   try {
     let result: { grade: Grade; score: number; counts: Counts; passed?: PassedCheck[]; stack?: { supabase?: boolean; firebase?: boolean; firebaseRulesInRepo?: boolean }; aiUsage?: { model: string; calls: number; inputTokens: number; outputTokens: number; estCostUsd: number } };
+    // Informational, non-secret notes about how the scan ran (surfaced to the UI).
+    const notes: string[] = [];
 
     if (doc.type === 'deep') {
       if (!doc.ownerUid) throw new Error('deep scan requires an owner');
@@ -95,6 +97,7 @@ export async function runScanJob(job: ScanJob): Promise<void> {
       workspace = workspacePath(scanId);
       // Deep/upload scans clone + parse a whole codebase — give them the long budget.
       const built = await withTimeout(buildDeepWorkspace(scanId, doc.ownerUid, doc), config.deepScanTimeoutMs);
+      if (built.historyTruncated) notes.push('History too large — we scanned your current files only (git history skipped).');
       result = await withTimeout(runDeepEngine(scanId, workspace, doc, built.anonReadable), config.deepScanTimeoutMs);
     } else if (doc.type === 'upload') {
       if (!doc.ownerUid) throw new Error('upload scan requires an owner');
@@ -127,6 +130,7 @@ export async function runScanJob(job: ScanJob): Promise<void> {
       ...(result.passed ? { passed: result.passed } : {}),
       ...(result.stack ? { stack: result.stack } : {}),
       ...(result.aiUsage ? { aiUsage: result.aiUsage } : {}),
+      ...(notes.length ? { notes } : {}),
       ...finishedFields(),
     });
     console.log(`[worker] runScan: ${scanId} done — grade ${result.grade}, ${result.counts.critical} critical`);
