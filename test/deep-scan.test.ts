@@ -86,7 +86,7 @@ describe('B — deep scan finds white-box criticals (QuickCart)', () => {
     const d = await getScan(scanId);
     expect(d?.type).toBe('deep');
     expect(d?.grade).toBe('F');
-    expect(d?.counts?.critical).toBe(11); // see QUICKCART_CRITICAL in scan-service.test.ts
+    expect(d?.counts?.critical).toBe(12); // see QUICKCART_CRITICAL in scan-service.test.ts
 
     const ids = new Set((await listFindings(scanId)).map((f) => f.ruleId));
     expect(ids.has('SECRETS_STRIPE_SECRET_KEY')).toBe(true);

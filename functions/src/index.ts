@@ -6,6 +6,7 @@ import { meWithUsage } from '../../shared/src/usage.js';
 import { sendWelcome } from '../../shared/src/emails/senders.js';
 import { handleCreateScan } from './createScan.js';
 import { handleClaimScan } from './claimScan.js';
+import { configureTrustProxy, clientIp } from './client-ip.js';
 import { handleDismissFinding } from './dismissFinding.js';
 import { handleCreateDeepScan } from './createDeepScan.js';
 import { handleCreateUploadSession, handleFinalizeUploadScan } from './createUploadScan.js';
@@ -43,6 +44,7 @@ import { resolveAuth, requireAuth, AuthError } from './auth.js';
  */
 export function createApiApp() {
   const app = express();
+  configureTrustProxy(app);
 
   // CORS for the browser frontend (veilguard.dev → api.veilguard.dev). Must run
   // before the routes so it also answers the preflight. Webhooks send no Origin
@@ -82,7 +84,7 @@ export function createApiApp() {
   });
 
   app.post('/createScan', async (req: Request, res: Response) => {
-    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const ip = clientIp(req);
     try {
       const auth = await resolveAuth(req.headers.authorization);
       if (auth) await ensureUser(auth);
@@ -196,7 +198,7 @@ export function createApiApp() {
     res.status(r.status).json(r.body);
   });
   app.post('/auth/sendReset', async (req: Request, res: Response) => {
-    const r = await handleSendReset(req.body, req.ip || req.socket.remoteAddress || 'unknown');
+    const r = await handleSendReset(req.body, clientIp(req));
     res.status(r.status).json(r.body);
   });
 
@@ -205,7 +207,7 @@ export function createApiApp() {
     let auth = null;
     try { auth = await resolveAuth(req.headers.authorization); }
     catch (e) { if (e instanceof AuthError) return res.status(e.status).json({ error: e.message }); throw e; }
-    const r = await handleFeedback(req.body, auth, req.ip || req.socket.remoteAddress || 'unknown');
+    const r = await handleFeedback(req.body, auth, clientIp(req));
     res.status(r.status).json(r.body);
   });
 
