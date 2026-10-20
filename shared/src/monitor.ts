@@ -239,8 +239,10 @@ export async function recordMonitoringResult(scanId: string): Promise<MonitorEve
       (s) => s.id !== scan.id && s.status === 'done' && new Date(s.createdAt) < new Date(scan.createdAt) && sameLensAndTarget(scan, s),
     );
 
-    const current = await listFindings(scanId);
-    const prevFindings = prev ? await listFindings(prev.id) : [];
+    // Findings the owner dismissed as false positives never alert or "resolve".
+    const active = (fs: Awaited<ReturnType<typeof listFindings>>) => fs.filter((f) => !(f as { dismissed?: boolean }).dismissed);
+    const current = active(await listFindings(scanId));
+    const prevFindings = prev ? active(await listFindings(prev.id)) : [];
     const curByKey = new Map(current.map((f) => [findingId(f as never), f]));
     const prevKeys = new Set(prevFindings.map((f) => findingId(f as never)));
 

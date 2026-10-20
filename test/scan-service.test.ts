@@ -12,7 +12,10 @@ import {
 } from './harness.js';
 
 // The count Slice 1 produces for QuickCart (native-first, engines skipped).
-const QUICKCART_CRITICAL = 13;
+// 11 after the scanner precision pass: the "any signed-in user can READ profiles"
+// policy is high (a read, not a write), and the Next.js middleware CVE is a low
+// "verify" because QuickCart has no middleware file to bypass.
+const QUICKCART_CRITICAL = 11;
 
 describe('A — create→queue→run→done happy path', () => {
   it('scans the QuickCart repo end to end', async () => {

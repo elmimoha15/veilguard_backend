@@ -6,6 +6,7 @@ import { meWithUsage } from '../../shared/src/usage.js';
 import { sendWelcome } from '../../shared/src/emails/senders.js';
 import { handleCreateScan } from './createScan.js';
 import { handleClaimScan } from './claimScan.js';
+import { handleDismissFinding } from './dismissFinding.js';
 import { handleCreateDeepScan } from './createDeepScan.js';
 import { handleCreateUploadSession, handleFinalizeUploadScan } from './createUploadScan.js';
 import {
@@ -108,6 +109,16 @@ export function createApiApp() {
 
   app.post('/claimScan', async (req: Request, res: Response) => {
     const result = await handleClaimScan(req.body, req.headers.authorization);
+    res.status(result.status).json(result.body);
+  });
+
+  app.post('/findings/dismiss', async (req: Request, res: Response) => {
+    const result = await handleDismissFinding(req.body, req.headers.authorization, true);
+    res.status(result.status).json(result.body);
+  });
+
+  app.post('/findings/undismiss', async (req: Request, res: Response) => {
+    const result = await handleDismissFinding(req.body, req.headers.authorization, false);
     res.status(result.status).json(result.body);
   });
 

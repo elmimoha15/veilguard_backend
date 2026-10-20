@@ -122,6 +122,22 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // ---- appDismissals/{uid}__{appKey} : findings the owner marked "not an issue" ----
+    // Written only by POST /findings/dismiss|undismiss (Admin SDK, which also
+    // re-grades the scan), so a client can never hide findings or alter a grade.
+    match /appDismissals/{id} {
+      allow get: if signedIn() && request.auth.uid == resource.data.uid;
+      allow list: if signedIn() && request.auth.uid == resource.data.uid;
+      allow write: if false;
+    }
+
+    // ---- falsePositiveReports/{id} : review queue for scanner precision ----
+    // Server-only (Admin SDK). Reviewed to turn real false positives into
+    // scanner corpus tests.
+    match /falsePositiveReports/{id} {
+      allow read, write: if false;
+    }
+
     // Everything else denied by default.
   }
 }

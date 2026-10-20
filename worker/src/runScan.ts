@@ -1,5 +1,5 @@
 import { existsSync, statSync } from 'node:fs';
-import { buildContext, runScan as runEngine } from 'veilguard-scanner';
+import { buildContext, runScan as runEngine, grade as engineGrade } from 'veilguard-scanner';
 import type { ScanProgress, Grade, Counts, PassedCheck } from 'veilguard-scanner';
 import { buildDeepWorkspace, runDeepEngine, removeWorkspace, workspacePath, NeedsReconnectError } from './deepScan.js';
 import { buildUploadWorkspace } from './uploadScan.js';
@@ -14,6 +14,8 @@ import {
   finishedFields,
 } from '../../shared/src/firestore.js';
 import { recordMonitoringResult } from '../../shared/src/monitor.js';
+import { loadDismissedKeys, fpKey } from '../../shared/src/dismissals.js';
+import type { Finding } from 'veilguard-scanner';
 import type { ScanJob } from '../../shared/src/types.js';
 
 export class ScanTimeoutError extends Error {
@@ -125,10 +127,16 @@ export async function runScanJob(job: ScanJob): Promise<void> {
       if (doc.target.type === 'url' && ctx.http && !ctx.http.reachable) {
         throw new Error(`target URL unreachable: ${doc.target.value}`);
       }
+      // Findings the owner marked "not an issue" for this app: stored flagged, never graded.
+      const dismissed = await loadDismissedKeys(doc.ownerUid, doc);
+      const findings: Finding[] = [];
       result = await withTimeout(
         runEngine(ctx, {
           skipEngines: true,
-          onFinding: (finding) => writeFinding(scanId, finding),
+          onFinding: (finding) => {
+            findings.push(finding);
+            return writeFinding(scanId, finding, dismissed);
+          },
           onProgress: (progress: ScanProgress) => updateProgress(scanId, progress),
         }),
         config.scanTimeoutMs,
@@ -138,6 +146,10 @@ export async function runScanJob(job: ScanJob): Promise<void> {
       // your backend?" when we already know.
       const urlStack = detectUrlStack(ctx.discovered);
       if (urlStack) result = { ...result, stack: urlStack };
+      if (dismissed.size) {
+        const g = engineGrade(findings.filter((f) => !dismissed.has(fpKey(f))));
+        result = { ...result, grade: g.grade, score: g.score, counts: { ...g.counts, passed: result.counts.passed } };
+      }
     }
 
     await setStatus(scanId, 'done', {

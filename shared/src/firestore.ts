@@ -1,6 +1,7 @@
 import { initializeApp, getApps } from 'firebase-admin/app';
 import { getFirestore, FieldValue, type Firestore } from 'firebase-admin/firestore';
 import { findingId as engineFindingId } from 'veilguard-scanner';
+import { fpKey } from './fpkey.js';
 import { config } from './config.js';
 import { makeStaging } from './staging.js';
 import type { Finding, Provider, ScanDoc, ScanProgress, ScanStatus, Target, UserDoc } from './types.js';
@@ -153,11 +154,15 @@ export async function updateProgress(id: string, progress: ScanProgress): Promis
  * data layer, not merely hidden in the UI. The id is the engine's deterministic
  * hash, so retries overwrite rather than duplicate.
  */
-export async function writeFinding(scanId: string, finding: Finding): Promise<void> {
+export async function writeFinding(scanId: string, finding: Finding, dismissedKeys?: Set<string>): Promise<void> {
   const { fix, fixPrompt, ...pub } = finding;
   const fid = engineFindingId(finding);
   const docRef = findingsRef(scanId).doc(fid);
-  await docRef.set(pub);
+  // fpKey: the line-independent identity used for "mark as false positive". A
+  // finding the owner already dismissed for this app is stored but flagged, so
+  // it stays visible (collapsed) and never counts toward the grade.
+  const key = fpKey(finding);
+  await docRef.set({ ...pub, fpKey: key, ...(dismissedKeys?.has(key) ? { dismissed: true } : {}) });
   if (fix !== undefined || fixPrompt !== undefined) {
     await docRef.collection('private').doc('fix').set({ fix, fixPrompt });
   }

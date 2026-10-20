@@ -19,6 +19,7 @@ import {
 import { generateFix, fixCacheKey, readFixCache, writeFixCache, AiFixUnavailableError, resetAiUsage, getAiUsage } from '../../shared/src/claude-fix.js';
 import { underAiFixCap, bumpClaudeCall, bumpClaudeTokens } from '../../shared/src/usage.js';
 import type { ScanDoc, GitHubSecret, SupabaseSecret } from '../../shared/src/types.js';
+import { loadDismissedKeys, fpKey } from '../../shared/src/dismissals.js';
 
 /** Thrown when a Supabase token can't be refreshed — the user must reconnect. */
 export class NeedsReconnectError extends Error {}
@@ -267,9 +268,11 @@ export async function runDeepEngine(
 ): Promise<{ grade: Grade; score: number; counts: Counts; passed: PassedCheck[]; stack: DetectedStack; aiUsage?: AiUsageSummary }> {
   const all: Finding[] = [];
   const passes: PassedCheck[] = [];
+  // Findings the owner marked "not an issue" for this app: stored flagged, never graded.
+  const dismissed = await loadDismissedKeys(doc.ownerUid, doc);
   const onFinding = (f: Finding) => {
     all.push(f);
-    return writeFinding(scanId, f);
+    return writeFinding(scanId, f, dismissed);
   };
   const onProgress = (p: { done: number; total: number; phase: string }) => updateProgress(scanId, p);
 
@@ -313,7 +316,8 @@ export async function runDeepEngine(
   // Slice 8: replace the canned fix with a Claude-tailored one for the top
   // findings, while the source workspace is still on disk. Best-effort — never
   // fails the scan. Deep scans are Guard-only, so this is inherently paid-only.
-  const usage = await enhanceWithAiFixes(scanId, workspace, uniq, doc.ownerUid ?? undefined);
+  const active = uniq.filter((f) => !dismissed.has(fpKey(f)));
+  const usage = await enhanceWithAiFixes(scanId, workspace, active, doc.ownerUid ?? undefined);
 
   let aiUsage: AiUsageSummary | undefined;
   if (usage && usage.calls > 0) {
@@ -330,7 +334,7 @@ export async function runDeepEngine(
   // tile/count matches the list. Passes never affect grade/score.
   const passSeen = new Set<string>();
   const passed = passes.filter((p) => (passSeen.has(p.id) ? false : (passSeen.add(p.id), true)));
-  const graded = grade(uniq);
+  const graded = grade(active);
   graded.counts.passed = passed.length;
   return { ...graded, passed, stack, aiUsage };
 }
