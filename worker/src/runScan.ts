@@ -25,6 +25,18 @@ export class ScanTimeoutError extends Error {
   }
 }
 
+/**
+ * The backend a URL-scanned app ships public client config for (seen by recon in
+ * the page / its JS). Booleans only. Undefined when nothing was detected, so the
+ * scan doc carries no `stack` field at all in that case.
+ */
+export function detectUrlStack(discovered?: { supabaseUrl?: string; firebaseConfig?: object }): { supabase?: boolean; firebase?: boolean } | undefined {
+  const stack: { supabase?: boolean; firebase?: boolean } = {};
+  if (discovered?.supabaseUrl) stack.supabase = true;
+  if (discovered?.firebaseConfig) stack.firebase = true;
+  return Object.keys(stack).length ? stack : undefined;
+}
+
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new ScanTimeoutError(ms)), ms);
@@ -121,6 +133,11 @@ export async function runScanJob(job: ScanJob): Promise<void> {
         }),
         config.scanTimeoutMs,
       );
+      // Recon already saw which backend the page ships config for. Keep only the
+      // non-secret booleans (never the URL/keys) so onboarding can skip "What's
+      // your backend?" when we already know.
+      const urlStack = detectUrlStack(ctx.discovered);
+      if (urlStack) result = { ...result, stack: urlStack };
     }
 
     await setStatus(scanId, 'done', {

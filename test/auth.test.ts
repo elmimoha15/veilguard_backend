@@ -143,6 +143,11 @@ describe('E — claim an anonymous scan', () => {
     expect(claim.status).toBe(200);
     expect((await getScan(scanId))?.ownerUid).toBe(a.uid);
 
+    // Claiming again as the same owner is a no-op success (the signup handoff
+    // can claim twice: once after the OAuth return, once when onboarding ends).
+    expect((await post('/claimScan', { scanId }, a.token)).status).toBe(200);
+    expect((await getScan(scanId))?.ownerUid).toBe(a.uid);
+
     // Now it shows in A's list.
     const mine = await getDocs(query(collection(a.db, 'scans'), where('ownerUid', '==', a.uid)));
     expect(mine.docs.some((d) => d.id === scanId)).toBe(true);
