@@ -265,7 +265,7 @@ export async function runDeepEngine(
   workspace: string,
   doc: ScanDoc,
   anonReadable: string[] = [],
-): Promise<{ grade: Grade; score: number; counts: Counts; passed: PassedCheck[]; stack: DetectedStack; aiUsage?: AiUsageSummary }> {
+): Promise<{ grade: Grade; score: number; counts: Counts; passed: PassedCheck[]; stack: DetectedStack; aiUsage?: AiUsageSummary; notes: string[] }> {
   const all: Finding[] = [];
   const passes: PassedCheck[] = [];
   // Findings the owner marked "not an issue" for this app: stored flagged, never graded.
@@ -282,14 +282,15 @@ export async function runDeepEngine(
   // completes with native + the other engine's results.
   const repoCtx = await buildContext({ type: 'repo', value: workspace });
   const stack = detectStack(repoCtx.repo);
-  passes.push(
-    ...(await runEngine(repoCtx, {
-      skipEngines: !config.enginesEnabled,
-      engineTimeoutMs: config.engineTimeoutMs,
-      onFinding,
-      onProgress,
-    })).passed,
-  );
+  const repoReport = await runEngine(repoCtx, {
+    skipEngines: !config.enginesEnabled,
+    engineTimeoutMs: config.engineTimeoutMs,
+    onFinding,
+    onProgress,
+  });
+  passes.push(...repoReport.passed);
+  // Coverage notes from the engine (e.g. "couldn't check your dependencies").
+  const notes = repoReport.notes ?? [];
 
   // Active anon-read probe results (read-only) — a live confirmation that the
   // anon role can read tables it shouldn't. These come from the connector, not
@@ -336,7 +337,7 @@ export async function runDeepEngine(
   const passed = passes.filter((p) => (passSeen.has(p.id) ? false : (passSeen.add(p.id), true)));
   const graded = grade(active);
   graded.counts.passed = passed.length;
-  return { ...graded, passed, stack, aiUsage };
+  return { ...graded, passed, stack, aiUsage, notes };
 }
 
 const AI_SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };

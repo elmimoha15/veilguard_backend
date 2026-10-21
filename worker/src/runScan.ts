@@ -111,8 +111,9 @@ export async function runScanJob(job: ScanJob): Promise<void> {
       workspace = workspacePath(scanId);
       // Deep/upload scans clone + parse a whole codebase — give them the long budget.
       const built = await withTimeout(buildDeepWorkspace(scanId, doc.ownerUid, doc), config.deepScanTimeoutMs);
-      if (built.historyTruncated) notes.push('History too large — we scanned your current files only (git history skipped).');
+      if (built.historyTruncated) notes.push('History too large, so we scanned your current files only (git history skipped).');
       result = await withTimeout(runDeepEngine(scanId, workspace, doc, built.anonReadable), config.deepScanTimeoutMs);
+      notes.push(...((result as { notes?: string[] }).notes ?? []));
     } else if (doc.type === 'upload') {
       if (!doc.ownerUid) throw new Error('upload scan requires an owner');
       // Same ephemeral-workspace contract as deep: set the path first so the
@@ -120,6 +121,7 @@ export async function runScanJob(job: ScanJob): Promise<void> {
       workspace = workspacePath(scanId);
       await withTimeout(buildUploadWorkspace(scanId, doc), config.deepScanTimeoutMs);
       result = await withTimeout(runDeepEngine(scanId, workspace, doc), config.deepScanTimeoutMs);
+      notes.push(...((result as { notes?: string[] }).notes ?? []));
     } else {
       assertTargetUsable(doc.target);
       const ctx = await withTimeout(buildContext(doc.target), config.scanTimeoutMs);

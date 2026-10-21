@@ -11,6 +11,7 @@ import { runScanJob } from '../worker/src/runScan.js';
 import { workspacePath } from '../worker/src/deepScan.js';
 import { QUICKCART_PATH, waitForTerminal } from './harness.js';
 import { authedClient, isPermissionDenied } from './client.js';
+import { DEPS_MISSING_NOTE } from 'veilguard-scanner';
 
 const SUPABASE_FIXTURE = resolve(process.cwd(), 'test-fixtures/supabase-broken-rls');
 let server: Server;
@@ -87,6 +88,8 @@ describe('B — deep scan finds white-box criticals (QuickCart)', () => {
     expect(d?.type).toBe('deep');
     expect(d?.grade).toBe('F');
     expect(d?.counts?.critical).toBe(12); // see QUICKCART_CRITICAL in scan-service.test.ts
+    // QuickCart has a package.json but no lockfile: say so instead of a silent clean result.
+    expect(d?.notes).toContain(DEPS_MISSING_NOTE);
 
     const ids = new Set((await listFindings(scanId)).map((f) => f.ruleId));
     expect(ids.has('SECRETS_STRIPE_SECRET_KEY')).toBe(true);
